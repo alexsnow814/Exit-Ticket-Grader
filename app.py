@@ -152,19 +152,6 @@ def initialize_batch(
 st.title("📝 Exit Ticket Grader")
 st.caption("Review a scanned class batch, assign each page to a student, and save scores.")
 
-with st.sidebar:
-    st.header("Data")
-    st.caption(
-        "Students and question settings come directly from Google Sheets. "
-        "Use refresh after editing the sheet or adding Drive files."
-    )
-    if st.button("Refresh Google data", use_container_width=True):
-        load_sheet.clear()
-        list_pdfs.clear()
-        download_file.clear()
-        cached_identify.clear()
-        st.rerun()
-
 try:
     students_df = load_sheet("students")
     questions_df = load_sheet("exit_ticket_questions")

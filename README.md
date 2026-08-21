@@ -35,5 +35,5 @@ answer keys change:
 
 - Edit the `students` and `exit_ticket_questions` tabs in Google Sheets.
 - Add incoming scans and answer keys to their existing Google Drive folders.
-- In the app sidebar, press **Refresh Google data** to load the changes
-  immediately. Otherwise, the short data caches refresh automatically.
+- Refresh the browser page to load the latest data. The short data caches also
+  refresh automatically while the app remains open.
