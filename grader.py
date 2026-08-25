@@ -17,6 +17,8 @@ SCORE_COLUMNS = [
     "possible_points",
     "awarded_points",
 ]
+MANUAL_QUESTION = "Manual total"
+MANUAL_STANDARD = "Manual grading"
 
 
 @dataclass(frozen=True)
@@ -158,3 +160,24 @@ def build_score_rows(
                 ]
             )
     return rows
+
+
+def build_manual_score_rows(
+    students: list[str],
+    filename: str,
+    possible_points: float,
+    grades: dict[str, dict[str, float]],
+) -> list[list[object]]:
+    """Build one overall-score row per student for an unconfigured ticket."""
+    exit_ticket = re.sub(r"\.pdf$", "", filename, flags=re.IGNORECASE).strip()
+    return [
+        [
+            student,
+            MANUAL_STANDARD,
+            exit_ticket,
+            MANUAL_QUESTION,
+            float(possible_points),
+            float(grades.get(student, {}).get(MANUAL_QUESTION, 0)),
+        ]
+        for student in students
+    ]
