@@ -7,8 +7,10 @@ from google.auth.transport.requests import AuthorizedSession
 import gspread
 
 from grader import (
+    MANUAL_QUESTION,
     SCORE_COLUMNS,
     assignment_key,
+    build_manual_score_rows,
     build_score_rows,
     identify_pages,
     questions_for_assignment,
@@ -135,6 +137,8 @@ def initialize_batch(
     st.session_state.grades = {}
     st.session_state.matches = matches
     st.session_state.questions = questions.to_dict("records")
+    st.session_state.manual_grading = questions.empty
+    st.session_state.manual_possible_points = 5.0
     st.session_state.expected_students = expected_students
     if roster_scope == "All students":
         st.session_state.visible_page_indices = [
@@ -198,9 +202,12 @@ answer_key = next(
 )
 
 if questions.empty:
-    st.warning(f"No questions match {scan_name} in exit_ticket_questions.")
+    st.warning(
+        f"No questions match {scan_name} in exit_ticket_questions. "
+        "This scan will use manual-total grading."
+    )
 if answer_key is None:
-    st.warning("No matching answer key was found.")
+    st.warning("No matching answer key was found. Student work is still available.")
 
 batch_key = (scan["id"], roster_scope)
 if st.button("Process this batch", type="primary"):
@@ -252,7 +259,10 @@ st.progress(
 left, right = st.columns([1.35, 1], gap="large")
 
 with left:
-    display = st.radio("Document", ["Student work", "Answer key"], horizontal=True)
+    document_options = ["Student work"]
+    if answer_key:
+        document_options.append("Answer key")
+    display = st.radio("Document", document_options, horizontal=True)
     if display == "Answer key" and answer_key:
         key_bytes = download_file(answer_key["id"])
         st.image(
@@ -278,17 +288,39 @@ with right:
 
     if selected_student:
         student_grades = dict(st.session_state.grades.get(selected_student, {}))
-        for question in st.session_state.questions:
-            question_id = str(question["question"])
-            possible = float(question["possible_points"])
-            student_grades[question_id] = st.number_input(
-                f"Question {question_id} · {question['standard']} (/{possible:g})",
+        if st.session_state.manual_grading:
+            possible = st.number_input(
+                "Total possible points",
+                min_value=0.5,
+                value=float(st.session_state.manual_possible_points),
+                step=0.5,
+                key=f"manual_possible_{scan['id']}",
+                help="Used for every student's manual-total score in this batch.",
+            )
+            st.session_state.manual_possible_points = possible
+            current_grade = min(
+                float(student_grades.get(MANUAL_QUESTION, 0)), possible
+            )
+            student_grades[MANUAL_QUESTION] = st.number_input(
+                f"Manual grade (/{possible:g})",
                 min_value=0.0,
                 max_value=possible,
-                value=float(student_grades.get(question_id, 0)),
+                value=current_grade,
                 step=0.5,
-                key=f"grade_{scan['id']}_{selected_student}_{question_id}",
+                key=f"manual_grade_{scan['id']}_{selected_student}",
             )
+        else:
+            for question in st.session_state.questions:
+                question_id = str(question["question"])
+                possible = float(question["possible_points"])
+                student_grades[question_id] = st.number_input(
+                    f"Question {question_id} · {question['standard']} (/{possible:g})",
+                    min_value=0.0,
+                    max_value=possible,
+                    value=float(student_grades.get(question_id, 0)),
+                    step=0.5,
+                    key=f"grade_{scan['id']}_{selected_student}_{question_id}",
+                )
         # Reassign the top-level object so Streamlit persists the edited values
         # even after this student's widgets leave the page during navigation.
         all_grades = dict(st.session_state.grades)
@@ -331,10 +363,18 @@ if st.button("Save and finalize batch", type="primary", disabled=not confirm or 
     try:
         # Save against the same immutable question snapshot used to render the
         # inputs. A sheet refresh must not change the lookup keys mid-batch.
-        batch_questions = pd.DataFrame(st.session_state.questions)
-        score_rows = build_score_rows(
-            expected_students, batch_questions, st.session_state.grades
-        )
+        if st.session_state.manual_grading:
+            score_rows = build_manual_score_rows(
+                expected_students,
+                scan_name,
+                st.session_state.manual_possible_points,
+                st.session_state.grades,
+            )
+        else:
+            batch_questions = pd.DataFrame(st.session_state.questions)
+            score_rows = build_score_rows(
+                expected_students, batch_questions, st.session_state.grades
+            )
         save_rows(score_rows)
     except Exception as exc:
         st.error("Scores could not be saved. Your page assignments and grades remain on screen.")
