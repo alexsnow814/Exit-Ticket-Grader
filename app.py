@@ -124,6 +124,7 @@ def initialize_batch(
     all_students,
     expected_students,
     questions,
+    manual_grading,
 ):
     matches = cached_identify(scan_bytes, tuple(all_students))
     st.session_state.batch_key = (scan["id"], roster_scope)
@@ -137,7 +138,7 @@ def initialize_batch(
     st.session_state.grades = {}
     st.session_state.matches = matches
     st.session_state.questions = questions.to_dict("records")
-    st.session_state.manual_grading = questions.empty
+    st.session_state.manual_grading = manual_grading
     st.session_state.manual_possible_points = 5.0
     st.session_state.expected_students = expected_students
     if roster_scope == "All students":
@@ -207,7 +208,10 @@ if questions.empty:
         "This scan will use manual-total grading."
     )
 if answer_key is None:
-    st.warning("No matching answer key was found. Student work is still available.")
+    st.warning(
+        "No matching answer key was found. Student work is still available, "
+        "and this scan will use manual-total grading."
+    )
 
 batch_key = (scan["id"], roster_scope)
 if st.button("Process this batch", type="primary"):
@@ -218,6 +222,7 @@ if st.button("Process this batch", type="primary"):
         all_students,
         expected_students,
         questions,
+        questions.empty or answer_key is None,
     )
 
 if st.session_state.get("batch_key") != batch_key:
