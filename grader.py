@@ -5,6 +5,7 @@ import subprocess
 import unicodedata
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from numbers import Real
 
 import pandas as pd
 
@@ -13,6 +14,7 @@ SCORE_COLUMNS = [
     "student",
     "standard",
     "exit_ticket",
+    "exit_ticket_date",
     "question",
     "possible_points",
     "awarded_points",
@@ -39,6 +41,33 @@ def assignment_key(filename: str) -> str:
     stem = re.sub(r"\.pdf$", "", filename, flags=re.IGNORECASE)
     stem = re.sub(r"\banswer\s*key\b", "", stem, flags=re.IGNORECASE)
     return normalize(stem)
+
+
+def lesson_number(value: object) -> str | None:
+    """Return the leading lesson number used by scan and schedule names."""
+    match = re.match(r"^\s*(\d+\.\d+)\b", str(value or ""))
+    return match.group(1) if match else None
+
+
+def date_for_assignment(schedule: pd.DataFrame, filename: str) -> str | None:
+    """Look up an exit ticket's scheduled lesson date as an ISO date string."""
+    if schedule.empty or not {"lesson", "exit_ticket_date"}.issubset(schedule.columns):
+        return None
+    target = lesson_number(filename)
+    if target is None:
+        return None
+    matches = schedule.loc[
+        schedule["lesson"].map(lesson_number).eq(target), "exit_ticket_date"
+    ]
+    parsed = matches.map(
+        lambda value: pd.to_datetime(value, unit="D", origin="1899-12-30")
+        if isinstance(value, Real) and not isinstance(value, bool)
+        else pd.to_datetime(value, errors="coerce")
+    )
+    parsed = parsed.loc[parsed.notna()]
+    if parsed.empty:
+        return None
+    return parsed.iloc[0].date().isoformat()
 
 
 def render_page(pdf_bytes: bytes, page_index: int, zoom: float = 1.6) -> bytes:
@@ -142,8 +171,13 @@ def questions_for_assignment(
 
 
 def build_score_rows(
-    students: list[str], questions: pd.DataFrame, grades: dict[str, dict[str, float]]
+    students: list[str],
+    questions: pd.DataFrame,
+    grades: dict[str, dict[str, float]],
+    exit_ticket_date: str,
+    absent_students: set[str] | None = None,
 ) -> list[list[object]]:
+    absent_students = absent_students or set()
     rows = []
     for student in students:
         student_grades = grades.get(student, {})
@@ -154,9 +188,12 @@ def build_score_rows(
                     student,
                     question["standard"],
                     question["exit_ticket"],
+                    exit_ticket_date,
                     question_id,
                     float(question["possible_points"]),
-                    float(student_grades.get(question_id, 0)),
+                    "AE"
+                    if student in absent_students
+                    else float(student_grades.get(question_id, 0)),
                 ]
             )
     return rows
@@ -167,17 +204,23 @@ def build_manual_score_rows(
     filename: str,
     possible_points: float,
     grades: dict[str, dict[str, float]],
+    exit_ticket_date: str,
+    absent_students: set[str] | None = None,
 ) -> list[list[object]]:
     """Build one overall-score row per student for an unconfigured ticket."""
+    absent_students = absent_students or set()
     exit_ticket = re.sub(r"\.pdf$", "", filename, flags=re.IGNORECASE).strip()
     return [
         [
             student,
             MANUAL_STANDARD,
             exit_ticket,
+            exit_ticket_date,
             MANUAL_QUESTION,
             float(possible_points),
-            float(grades.get(student, {}).get(MANUAL_QUESTION, 0)),
+            "AE"
+            if student in absent_students
+            else float(grades.get(student, {}).get(MANUAL_QUESTION, 0)),
         ]
         for student in students
     ]

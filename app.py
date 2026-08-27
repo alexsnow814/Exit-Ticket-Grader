@@ -12,6 +12,7 @@ from grader import (
     assignment_key,
     build_manual_score_rows,
     build_score_rows,
+    date_for_assignment,
     identify_pages,
     questions_for_assignment,
     render_page,
@@ -160,6 +161,7 @@ st.caption("Review a scanned class batch, assign each page to a student, and sav
 try:
     students_df = load_sheet("students")
     questions_df = load_sheet("exit_ticket_questions")
+    exit_ticket_dates_df = load_sheet("exit_ticket_dates")
     scans = list_pdfs(INCOMING_FOLDER_ID)
     answer_keys = list_pdfs(ANSWER_KEY_FOLDER_ID)
 except Exception as exc:
@@ -173,6 +175,9 @@ if students_df.empty or not {"student", "period"}.issubset(students_df.columns):
 if not scans:
     st.info("No PDF files were found in Incoming Scans.")
     st.stop()
+if not {"lesson", "exit_ticket_date"}.issubset(exit_ticket_dates_df.columns):
+    st.error("The exit_ticket_dates tab needs lesson and exit_ticket_date columns.")
+    st.stop()
 
 controls = st.columns(2)
 scan_name = controls[0].selectbox("Incoming scan", [item["name"] for item in scans])
@@ -181,10 +186,18 @@ scope_options = ["All students", *[f"Period {period}" for period in periods]]
 roster_scope = controls[1].selectbox(
     "Students expected in this scan",
     scope_options,
-    help="This controls who receives a zero if missing. Name recognition always checks the complete roster.",
+    help="This controls who receives AE if missing. Name recognition always checks the complete roster.",
 )
 
 scan = next(item for item in scans if item["name"] == scan_name)
+exit_ticket_date = date_for_assignment(exit_ticket_dates_df, scan_name)
+if exit_ticket_date is None:
+    st.error(
+        f"No scheduled date was found for {scan_name}. Add its lesson number and "
+        "date to the exit_ticket_dates tab before saving grades."
+    )
+    st.stop()
+st.caption(f"Exit ticket date: {pd.Timestamp(exit_ticket_date):%B %-d, %Y}")
 all_students = sorted(students_df["student"].dropna().astype(str).unique())
 if roster_scope == "All students":
     expected_students = all_students
@@ -351,7 +364,7 @@ summary_c.metric("Missing students", len(missing_students))
 if duplicates:
     st.error("Assigned to multiple pages: " + ", ".join(duplicates))
 if missing_students:
-    with st.expander("Students who will receive zeroes"):
+    with st.expander("Students who will receive AE"):
         st.write("\n".join(f"• {student}" for student in missing_students))
 
 entered_points = sum(
@@ -362,7 +375,7 @@ entered_points = sum(
 st.caption(f"Entered points currently retained for this batch: {entered_points:g}")
 
 confirm = st.checkbox(
-    "I reviewed the page assignments. Save entered grades and award 0 to missing students."
+    "I reviewed the page assignments. Save entered grades and mark missing students AE."
 )
 if st.button("Save and finalize batch", type="primary", disabled=not confirm or bool(duplicates)):
     try:
@@ -374,11 +387,17 @@ if st.button("Save and finalize batch", type="primary", disabled=not confirm or 
                 scan_name,
                 st.session_state.manual_possible_points,
                 st.session_state.grades,
+                exit_ticket_date,
+                set(missing_students),
             )
         else:
             batch_questions = pd.DataFrame(st.session_state.questions)
             score_rows = build_score_rows(
-                expected_students, batch_questions, st.session_state.grades
+                expected_students,
+                batch_questions,
+                st.session_state.grades,
+                exit_ticket_date,
+                set(missing_students),
             )
         save_rows(score_rows)
     except Exception as exc:
