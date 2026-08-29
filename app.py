@@ -37,7 +37,9 @@ st.markdown(
     <style>
     .hold-zoom {
         width: 100%;
-        overflow: hidden;
+        overflow: visible;
+        position: relative;
+        z-index: 1;
         border: 1px solid rgba(128, 128, 128, 0.25);
         border-radius: 0.45rem;
         background: white;
@@ -56,7 +58,12 @@ st.markdown(
     }
     .hold-zoom:active img,
     .hold-zoom img:active {
-        transform: scale(1.45);
+        transform: scale(1.5);
+        transform-origin: top left;
+        box-shadow: 0 0.5rem 1.5rem rgba(0, 0, 0, 0.3);
+    }
+    .hold-zoom:active {
+        z-index: 1000;
     }
     .hold-zoom-hint {
         margin-top: 0.2rem;
@@ -69,8 +76,43 @@ st.markdown(
             padding-left: 0.65rem;
             padding-right: 0.65rem;
         }
+        .st-key-grading_workspace,
+        .st-key-grading_workspace div[data-testid="stVerticalBlock"],
+        .st-key-grading_workspace div[data-testid="stColumn"] {
+            overflow: visible !important;
+        }
+        .st-key-grading_workspace div[data-testid="stHorizontalBlock"] {
+            display: flex !important;
+            flex-direction: row !important;
+            flex-wrap: nowrap !important;
+            align-items: flex-start !important;
+            gap: 0.35rem !important;
+        }
+        .st-key-grading_workspace div[data-testid="stColumn"]:nth-child(1) {
+            flex: 2 1 0 !important;
+            width: 66.6667% !important;
+            min-width: 0 !important;
+            position: relative !important;
+            z-index: 2 !important;
+        }
+        .st-key-grading_workspace div[data-testid="stColumn"]:nth-child(2) {
+            flex: 1 1 0 !important;
+            width: 33.3333% !important;
+            min-width: 0 !important;
+            position: relative !important;
+            z-index: 1 !important;
+        }
         div[data-testid="stNumberInput"] label p {
             font-size: 0.82rem;
+        }
+        .st-key-grading_workspace div[data-testid="stNumberInput"] input {
+            min-width: 0 !important;
+            padding-left: 0.35rem !important;
+            padding-right: 0.35rem !important;
+        }
+        .st-key-grading_workspace button[data-testid="stNumberInputStepDown"],
+        .st-key-grading_workspace button[data-testid="stNumberInputStepUp"] {
+            display: none !important;
         }
     }
     </style>
@@ -364,61 +406,64 @@ selected_student = None if selected.startswith("—") else selected
 st.session_state.page_students[page_index] = selected_student
 st.caption(f"Automatic name-match confidence: {confidence}%")
 
-work_column, grade_column = st.columns([2, 1], gap="small", vertical_alignment="top")
+with st.container(key="grading_workspace"):
+    work_column, grade_column = st.columns(
+        [2, 1], gap="small", vertical_alignment="top"
+    )
 
-with work_column:
-    if display == "Answer key" and answer_key:
-        key_bytes = download_file(answer_key["id"])
-        page_png = render_page(
-            key_bytes, min(page_index, pdf_page_count(key_bytes) - 1)
-        )
-    else:
-        page_png = render_page(scan_bytes, page_index)
-    show_zoomable_page(page_png)
-
-with grade_column:
-    if selected_student:
-        student_grades = dict(st.session_state.grades.get(selected_student, {}))
-        if st.session_state.manual_grading:
-            possible = st.number_input(
-                "Total possible points",
-                min_value=0.5,
-                value=float(st.session_state.manual_possible_points),
-                step=0.5,
-                key=f"manual_possible_{scan['id']}",
-                help="Used for every student's manual-total score in this batch.",
-            )
-            st.session_state.manual_possible_points = possible
-            current_grade = min(
-                float(student_grades.get(MANUAL_QUESTION, 0)), possible
-            )
-            student_grades[MANUAL_QUESTION] = st.number_input(
-                f"Manual grade (/{possible:g})",
-                min_value=0.0,
-                max_value=possible,
-                value=current_grade,
-                step=0.5,
-                key=f"manual_grade_{scan['id']}_{selected_student}",
+    with work_column:
+        if display == "Answer key" and answer_key:
+            key_bytes = download_file(answer_key["id"])
+            page_png = render_page(
+                key_bytes, min(page_index, pdf_page_count(key_bytes) - 1)
             )
         else:
-            for question in st.session_state.questions:
-                question_id = str(question["question"])
-                possible = float(question["possible_points"])
-                student_grades[question_id] = st.number_input(
-                    f"{question_id} (/{possible:g})",
+            page_png = render_page(scan_bytes, page_index)
+        show_zoomable_page(page_png)
+
+    with grade_column:
+        if selected_student:
+            student_grades = dict(st.session_state.grades.get(selected_student, {}))
+            if st.session_state.manual_grading:
+                possible = st.number_input(
+                    "Total possible points",
+                    min_value=0.5,
+                    value=float(st.session_state.manual_possible_points),
+                    step=0.5,
+                    key=f"manual_possible_{scan['id']}",
+                    help="Used for every student's manual-total score in this batch.",
+                )
+                st.session_state.manual_possible_points = possible
+                current_grade = min(
+                    float(student_grades.get(MANUAL_QUESTION, 0)), possible
+                )
+                student_grades[MANUAL_QUESTION] = st.number_input(
+                    f"Manual grade (/{possible:g})",
                     min_value=0.0,
                     max_value=possible,
-                    value=float(student_grades.get(question_id, 0)),
+                    value=current_grade,
                     step=0.5,
-                    key=f"grade_{scan['id']}_{selected_student}_{question_id}",
+                    key=f"manual_grade_{scan['id']}_{selected_student}",
                 )
-        # Reassign the top-level object so Streamlit persists the edited values
-        # even after this student's widgets leave the page during navigation.
-        all_grades = dict(st.session_state.grades)
-        all_grades[selected_student] = student_grades
-        st.session_state.grades = all_grades
-    else:
-        st.info("Select a student before entering grades for this page.")
+            else:
+                for question in st.session_state.questions:
+                    question_id = str(question["question"])
+                    possible = float(question["possible_points"])
+                    student_grades[question_id] = st.number_input(
+                        f"{question_id} (/{possible:g})",
+                        min_value=0.0,
+                        max_value=possible,
+                        value=float(student_grades.get(question_id, 0)),
+                        step=0.5,
+                        key=f"grade_{scan['id']}_{selected_student}_{question_id}",
+                    )
+            # Reassign the top-level object so Streamlit persists the edited values
+            # even after this student's widgets leave the page during navigation.
+            all_grades = dict(st.session_state.grades)
+            all_grades[selected_student] = student_grades
+            st.session_state.grades = all_grades
+        else:
+            st.info("Select a student before entering grades for this page.")
 
 # Navigation is applied only after the current page's widgets have copied their
 # values into the persistent grade dictionary above.
