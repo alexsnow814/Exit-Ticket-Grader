@@ -317,7 +317,9 @@ def initialize_batch(
 
 
 st.title("📝 Exit Ticket Grader")
-st.caption("Review a scanned class batch, assign each page to a student, and save scores.")
+st.caption(
+    "Review a scanned class batch, assign each page to a student, and save or resume progress."
+)
 
 try:
     students_df = load_sheet("students")
