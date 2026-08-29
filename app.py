@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+
 import pandas as pd
 import streamlit as st
 from google.oauth2.service_account import Credentials
@@ -29,6 +31,52 @@ SCOPES = [
 
 
 st.set_page_config(page_title="Exit Ticket Grader", page_icon="📝", layout="wide")
+
+st.markdown(
+    """
+    <style>
+    .hold-zoom {
+        width: 100%;
+        overflow: hidden;
+        border: 1px solid rgba(128, 128, 128, 0.25);
+        border-radius: 0.45rem;
+        background: white;
+        cursor: zoom-in;
+        touch-action: manipulation;
+        -webkit-touch-callout: none;
+        user-select: none;
+    }
+    .hold-zoom img {
+        display: block;
+        width: 100%;
+        height: auto;
+        transition: transform 120ms ease-out;
+        transform-origin: center center;
+        -webkit-user-drag: none;
+    }
+    .hold-zoom:active img,
+    .hold-zoom img:active {
+        transform: scale(1.45);
+    }
+    .hold-zoom-hint {
+        margin-top: 0.2rem;
+        color: rgba(128, 128, 128, 0.9);
+        font-size: 0.72rem;
+        text-align: center;
+    }
+    @media (max-width: 640px) {
+        .block-container {
+            padding-left: 0.65rem;
+            padding-right: 0.65rem;
+        }
+        div[data-testid="stNumberInput"] label p {
+            font-size: 0.82rem;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 @st.cache_resource
@@ -116,6 +164,22 @@ def pdf_page_count(pdf_bytes: bytes) -> int:
     count = document.page_count
     document.close()
     return count
+
+
+def show_zoomable_page(png_bytes: bytes):
+    """Show a page that enlarges only while it is pressed or clicked."""
+    encoded = base64.b64encode(png_bytes).decode("ascii")
+    st.markdown(
+        f"""
+        <div class="hold-zoom" title="Press and hold to magnify"
+             ontouchstart="">
+            <img src="data:image/png;base64,{encoded}"
+                 alt="PDF page" draggable="false">
+        </div>
+        <div class="hold-zoom-hint">Press and hold the page to magnify</div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def initialize_batch(
@@ -274,36 +338,45 @@ st.progress(
     (page_position + 1) / page_count,
     text=f"{roster_scope}: student {page_position + 1} of {page_count}",
 )
-left, right = st.columns([1.35, 1], gap="large")
+document_options = ["Student work"]
+if answer_key:
+    document_options.append("Answer key")
+display = st.radio("Document", document_options, horizontal=True)
 
-with left:
-    document_options = ["Student work"]
-    if answer_key:
-        document_options.append("Answer key")
-    display = st.radio("Document", document_options, horizontal=True)
+previous, next_page = st.columns(2)
+go_previous = previous.button(
+    "← Previous", disabled=page_position == 0, use_container_width=True
+)
+go_next = next_page.button(
+    "Next →", disabled=page_position == page_count - 1, use_container_width=True
+)
+
+confidence = st.session_state.page_confidence.get(page_index, 0)
+options = ["— Unmatched / skip —", *expected_students]
+current_student = st.session_state.page_students.get(page_index)
+selected = st.selectbox(
+    "Student on this page",
+    options,
+    index=options.index(current_student) if current_student in options else 0,
+    key=f"student_page_{page_index}_{scan['id']}",
+)
+selected_student = None if selected.startswith("—") else selected
+st.session_state.page_students[page_index] = selected_student
+st.caption(f"Automatic name-match confidence: {confidence}%")
+
+work_column, grade_column = st.columns([2, 1], gap="small", vertical_alignment="top")
+
+with work_column:
     if display == "Answer key" and answer_key:
         key_bytes = download_file(answer_key["id"])
-        st.image(
-            render_page(key_bytes, min(page_index, pdf_page_count(key_bytes) - 1)),
-            use_container_width=True,
+        page_png = render_page(
+            key_bytes, min(page_index, pdf_page_count(key_bytes) - 1)
         )
     else:
-        st.image(render_page(scan_bytes, page_index), use_container_width=True)
+        page_png = render_page(scan_bytes, page_index)
+    show_zoomable_page(page_png)
 
-with right:
-    confidence = st.session_state.page_confidence.get(page_index, 0)
-    options = ["— Unmatched / skip —", *expected_students]
-    current_student = st.session_state.page_students.get(page_index)
-    selected = st.selectbox(
-        "Student on this page",
-        options,
-        index=options.index(current_student) if current_student in options else 0,
-        key=f"student_page_{page_index}_{scan['id']}",
-    )
-    selected_student = None if selected.startswith("—") else selected
-    st.session_state.page_students[page_index] = selected_student
-    st.caption(f"Automatic name-match confidence: {confidence}%")
-
+with grade_column:
     if selected_student:
         student_grades = dict(st.session_state.grades.get(selected_student, {}))
         if st.session_state.manual_grading:
@@ -332,7 +405,7 @@ with right:
                 question_id = str(question["question"])
                 possible = float(question["possible_points"])
                 student_grades[question_id] = st.number_input(
-                    f"Question {question_id} · {question['standard']} (/{possible:g})",
+                    f"{question_id} (/{possible:g})",
                     min_value=0.0,
                     max_value=possible,
                     value=float(student_grades.get(question_id, 0)),
@@ -347,13 +420,14 @@ with right:
     else:
         st.info("Select a student before entering grades for this page.")
 
-    previous, next_page = st.columns(2)
-    if previous.button("← Previous", disabled=page_position == 0, use_container_width=True):
-        st.session_state.page_position = page_position - 1
-        st.rerun()
-    if next_page.button("Next →", disabled=page_position == page_count - 1, use_container_width=True):
-        st.session_state.page_position = page_position + 1
-        st.rerun()
+# Navigation is applied only after the current page's widgets have copied their
+# values into the persistent grade dictionary above.
+if go_previous:
+    st.session_state.page_position = page_position - 1
+    st.rerun()
+if go_next:
+    st.session_state.page_position = page_position + 1
+    st.rerun()
 
 st.divider()
 st.subheader("Batch summary")
