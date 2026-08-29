@@ -7,6 +7,7 @@ from grader import (
     build_score_rows,
     date_for_assignment,
     find_student,
+    grades_for_assignment,
     questions_for_assignment,
 )
 
@@ -71,7 +72,7 @@ def test_batch_question_snapshot_preserves_entered_scores():
     )
 
     assert [row[-1] for row in saved_from_batch] == [4.5, 3]
-    assert [row[-1] for row in saved_from_refresh] == [0, 0]
+    assert [row[-1] for row in saved_from_refresh] == ["", ""]
 
 
 def test_manual_grading_builds_one_row_and_marks_absent_students_ae():
@@ -106,7 +107,7 @@ def test_manual_grading_builds_one_row_and_marks_absent_students_ae():
     ]
 
 
-def test_unentered_present_student_still_receives_zero():
+def test_unentered_present_student_remains_blank():
     questions = pd.DataFrame([
         {
             "exit_ticket": "1.1 Exit Ticket",
@@ -118,7 +119,29 @@ def test_unentered_present_student_still_receives_zero():
     rows = build_score_rows(
         ["Present Student"], questions, {}, "2026-08-28", set()
     )
-    assert rows[0][-1] == 0
+    assert rows[0][-1] == ""
+
+    zero_rows = build_score_rows(
+        ["Present Student"],
+        questions,
+        {"Present Student": {"1": 0}},
+        "2026-08-28",
+        set(),
+    )
+    assert zero_rows[0][-1] == 0.0
+
+
+def test_existing_numeric_scores_restore_but_blank_and_ae_do_not():
+    scores = pd.DataFrame([
+        {"student": "Student One", "exit_ticket": "1.1 Exit Ticket", "question": "1", "awarded_points": 0},
+        {"student": "Student One", "exit_ticket": "1.1 Exit Ticket", "question": "2", "awarded_points": ""},
+        {"student": "Student Two", "exit_ticket": "1.1 Exit Ticket", "question": "1", "awarded_points": "AE"},
+        {"student": "Student Three", "exit_ticket": "1.2 Exit Ticket", "question": "1", "awarded_points": 4},
+    ])
+
+    assert grades_for_assignment(scores, "1.1 Exit Ticket.pdf") == {
+        "Student One": {"1": 0.0}
+    }
 
 
 def test_date_for_assignment_uses_lesson_prefix_not_today():
