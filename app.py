@@ -16,6 +16,7 @@ from grader import (
     build_manual_score_rows,
     build_score_rows,
     date_for_assignment,
+    grades_for_assignment,
     identify_pages,
     questions_for_assignment,
     render_page,
@@ -114,6 +115,14 @@ st.markdown(
         .st-key-grading_workspace button[data-testid="stNumberInputStepDown"],
         .st-key-grading_workspace button[data-testid="stNumberInputStepUp"] {
             display: none !important;
+        }
+        .st-key-save_status_row div[data-testid="stColumn"] {
+            flex: 1 1 0 !important;
+            width: 50% !important;
+            min-width: 0 !important;
+        }
+        .st-key-save_status_row p {
+            font-size: 0.72rem;
         }
     }
     </style>
@@ -277,6 +286,7 @@ def initialize_batch(
     expected_students,
     questions,
     manual_grading,
+    existing_scores,
 ):
     matches = cached_identify(scan_bytes, tuple(all_students))
     st.session_state.batch_key = (scan["id"], roster_scope)
@@ -287,7 +297,7 @@ def initialize_batch(
     st.session_state.page_confidence = {
         match.page_index: match.confidence for match in matches
     }
-    st.session_state.grades = {}
+    st.session_state.grades = grades_for_assignment(existing_scores, scan["name"])
     st.session_state.matches = matches
     st.session_state.questions = questions.to_dict("records")
     st.session_state.manual_grading = manual_grading
@@ -313,6 +323,7 @@ try:
     students_df = load_sheet("students")
     questions_df = load_sheet("exit_ticket_questions")
     exit_ticket_dates_df = load_sheet("exit_ticket_dates")
+    scores_df = load_sheet("exit_ticket_scores")
     scans = list_pdfs(INCOMING_FOLDER_ID)
     answer_keys = list_pdfs(ANSWER_KEY_FOLDER_ID)
 except Exception as exc:
@@ -387,6 +398,7 @@ if st.button("Process this batch", type="primary"):
         expected_students,
         questions,
         questions.empty or answer_key is None,
+        scores_df,
     )
 
 if st.session_state.get("batch_key") != batch_key:
@@ -465,6 +477,15 @@ with st.container(key="grading_workspace"):
         else:
             page_png = render_page(scan_bytes, page_index)
         show_zoomable_page(page_png)
+        with st.container(key="save_status_row"):
+            save_area, status_area = st.columns([1, 1])
+            save_progress = save_area.button(
+                "Save",
+                type="primary",
+                use_container_width=True,
+                disabled=bool(duplicates),
+            )
+            student_status = status_area.empty()
 
     with grade_column:
         if selected_student:
@@ -480,31 +501,48 @@ with st.container(key="grading_workspace"):
                     help="Used for every student's manual-total score in this batch.",
                 )
                 st.session_state.manual_possible_points = possible
-                current_grade = min(
-                    float(student_grades.get(MANUAL_QUESTION, 0)), possible
+                saved_grade = student_grades.get(MANUAL_QUESTION)
+                current_grade = (
+                    min(float(saved_grade), possible)
+                    if saved_grade is not None
+                    else None
                 )
-                student_grades[MANUAL_QUESTION] = st.number_input(
+                entered_grade = st.number_input(
                     f"Manual grade (/{possible:g})",
                     min_value=0.0,
                     max_value=possible,
                     value=current_grade,
                     step=0.5,
                     format="%.2f",
+                    placeholder="Ungraded",
                     key=f"manual_grade_{scan['id']}_{selected_student}",
                 )
+                if entered_grade is None:
+                    student_grades.pop(MANUAL_QUESTION, None)
+                else:
+                    student_grades[MANUAL_QUESTION] = entered_grade
             else:
                 for question in st.session_state.questions:
                     question_id = str(question["question"])
                     possible = float(question["possible_points"])
-                    student_grades[question_id] = st.number_input(
+                    entered_grade = st.number_input(
                         f"{question_id} (/{possible:g})",
                         min_value=0.0,
                         max_value=possible,
-                        value=float(student_grades.get(question_id, 0)),
+                        value=(
+                            float(student_grades[question_id])
+                            if question_id in student_grades
+                            else None
+                        ),
                         step=0.5,
                         format="%.2f",
+                        placeholder="Ungraded",
                         key=f"grade_{scan['id']}_{selected_student}_{question_id}",
                     )
+                    if entered_grade is None:
+                        student_grades.pop(question_id, None)
+                    else:
+                        student_grades[question_id] = entered_grade
             # Reassign the top-level object so Streamlit persists the edited values
             # even after this student's widgets leave the page during navigation.
             all_grades = dict(st.session_state.grades)
@@ -513,43 +551,44 @@ with st.container(key="grading_workspace"):
         else:
             st.info("Select a student before entering grades for this page.")
 
+required_questions = (
+    [MANUAL_QUESTION]
+    if st.session_state.manual_grading
+    else [str(question["question"]) for question in st.session_state.questions]
+)
+
+
+def grade_count(student: str | None) -> int:
+    if not student:
+        return 0
+    student_grades = st.session_state.grades.get(student, {})
+    return sum(question in student_grades for question in required_questions)
+
+
+current_grade_count = grade_count(selected_student)
+if selected_student and current_grade_count == len(required_questions):
+    student_status.markdown("✅ **Graded**")
+elif selected_student:
+    student_status.markdown(
+        f"**Not yet graded**  \n{current_grade_count}/{len(required_questions)} entered"
+    )
+else:
+    student_status.markdown("**Not yet graded**")
+
+assigned_unique_students = sorted(set(assigned_expected_students))
+graded_students = [
+    student
+    for student in assigned_unique_students
+    if grade_count(student) == len(required_questions)
+]
+ungraded_students = [
+    student for student in assigned_unique_students if student not in graded_students
+]
+
 enable_mobile_grade_inputs()
 
-# Navigation is applied only after the current page's widgets have copied their
-# values into the persistent grade dictionary above.
-if go_previous:
-    st.session_state.page_position = page_position - 1
-    st.rerun()
-if go_next:
-    st.session_state.page_position = page_position + 1
-    st.rerun()
-
-st.divider()
-st.subheader("Batch summary")
-summary_a, summary_b, summary_c = st.columns(3)
-summary_a.metric("Pages in view", page_count)
-summary_b.metric("Matched students", len(set(assigned_expected_students)))
-summary_c.metric("Missing students", len(missing_students))
-if duplicates:
-    st.error("Assigned to multiple pages: " + ", ".join(duplicates))
-if missing_students:
-    with st.expander("Students who will receive AE"):
-        st.write("\n".join(f"• {student}" for student in missing_students))
-
-entered_points = sum(
-    float(points)
-    for student_grades in st.session_state.grades.values()
-    for points in student_grades.values()
-)
-st.caption(f"Entered points currently retained for this batch: {entered_points:g}")
-
-confirm = st.checkbox(
-    "I reviewed the page assignments. Save entered grades and mark missing students AE."
-)
-if st.button("Save and finalize batch", type="primary", disabled=not confirm or bool(duplicates)):
+if save_progress:
     try:
-        # Save against the same immutable question snapshot used to render the
-        # inputs. A sheet refresh must not change the lookup keys mid-batch.
         if st.session_state.manual_grading:
             score_rows = build_manual_score_rows(
                 expected_students,
@@ -574,5 +613,28 @@ if st.button("Save and finalize batch", type="primary", disabled=not confirm or 
         st.caption(f"Connection detail: {exc}")
     else:
         st.success(
-            f"Saved {len(score_rows)} question scores for {roster_scope.lower()}."
+            f"Progress saved: {len(graded_students)} graded, "
+            f"{len(ungraded_students)} still to grade."
         )
+
+# Navigation is applied only after the current page's widgets have copied their
+# values into the persistent grade dictionary above.
+if go_previous:
+    st.session_state.page_position = page_position - 1
+    st.rerun()
+if go_next:
+    st.session_state.page_position = page_position + 1
+    st.rerun()
+
+st.divider()
+st.subheader("Batch summary")
+summary_a, summary_b, summary_c, summary_d = st.columns(4)
+summary_a.metric("Pages in view", page_count)
+summary_b.metric("Graded students", len(graded_students))
+summary_c.metric("Still to grade", len(ungraded_students))
+summary_d.metric("Missing students", len(missing_students))
+if duplicates:
+    st.error("Assigned to multiple pages: " + ", ".join(duplicates))
+if missing_students:
+    with st.expander("Students who will receive AE"):
+        st.write("\n".join(f"• {student}" for student in missing_students))
