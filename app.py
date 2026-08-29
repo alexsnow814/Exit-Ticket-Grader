@@ -243,11 +243,12 @@ def enable_mobile_grade_inputs():
 
         function enhanceGradeInputs() {
           const inputs = doc.querySelectorAll(
-            '.st-key-grading_workspace input[type="number"]'
+            '.st-key-grading_workspace div[data-testid="stNumberInput"] input'
           );
 
           inputs.forEach((input) => {
             input.setAttribute('inputmode', 'decimal');
+            input.inputMode = 'decimal';
             input.setAttribute('enterkeyhint', 'done');
 
             if (input.dataset.gradeInputEnhanced === 'true') return;
@@ -261,6 +262,10 @@ def enable_mobile_grade_inputs():
             };
 
             input.addEventListener('focus', selectCurrentValue);
+            input.addEventListener('touchstart', () => {
+              input.setAttribute('inputmode', 'decimal');
+              input.inputMode = 'decimal';
+            }, {passive: true});
             input.addEventListener('pointerup', (event) => {
               event.preventDefault();
               selectCurrentValue();
@@ -271,7 +276,6 @@ def enable_mobile_grade_inputs():
         enhanceGradeInputs();
         const observer = new MutationObserver(enhanceGradeInputs);
         observer.observe(doc.body, {childList: true, subtree: true});
-        window.setTimeout(() => observer.disconnect(), 10000);
         </script>
         """,
         height=0,
