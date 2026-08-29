@@ -170,6 +170,31 @@ def questions_for_assignment(
     return questions.loc[mask].copy().reset_index(drop=True)
 
 
+def grades_for_assignment(scores: pd.DataFrame, filename: str) -> dict[str, dict[str, float]]:
+    """Restore previously entered numeric scores for one exit ticket."""
+    required = {"student", "exit_ticket", "question", "awarded_points"}
+    if scores.empty or not required.issubset(scores.columns):
+        return {}
+
+    target = assignment_key(filename)
+    selected = scores.loc[
+        scores["exit_ticket"].map(assignment_key).eq(target)
+    ]
+    grades: dict[str, dict[str, float]] = {}
+    for _, row in selected.iterrows():
+        awarded = row["awarded_points"]
+        if pd.isna(awarded) or str(awarded).strip() in {"", "AE"}:
+            continue
+        try:
+            points = float(awarded)
+        except (TypeError, ValueError):
+            continue
+        student = str(row["student"])
+        question = str(row["question"])
+        grades.setdefault(student, {})[question] = points
+    return grades
+
+
 def build_score_rows(
     students: list[str],
     questions: pd.DataFrame,
@@ -183,6 +208,11 @@ def build_score_rows(
         student_grades = grades.get(student, {})
         for _, question in questions.iterrows():
             question_id = str(question["question"])
+            awarded = (
+                "AE"
+                if student in absent_students
+                else student_grades.get(question_id, "")
+            )
             rows.append(
                 [
                     student,
@@ -191,9 +221,7 @@ def build_score_rows(
                     exit_ticket_date,
                     question_id,
                     float(question["possible_points"]),
-                    "AE"
-                    if student in absent_students
-                    else float(student_grades.get(question_id, 0)),
+                    awarded if awarded == "AE" or awarded == "" else float(awarded),
                 ]
             )
     return rows
@@ -220,7 +248,11 @@ def build_manual_score_rows(
             float(possible_points),
             "AE"
             if student in absent_students
-            else float(grades.get(student, {}).get(MANUAL_QUESTION, 0)),
+            else (
+                float(grades[student][MANUAL_QUESTION])
+                if MANUAL_QUESTION in grades.get(student, {})
+                else ""
+            ),
         ]
         for student in students
     ]
