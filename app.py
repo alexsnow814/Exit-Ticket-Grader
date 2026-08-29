@@ -4,6 +4,7 @@ import base64
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from google.oauth2.service_account import Credentials
 from google.auth.transport.requests import AuthorizedSession
 import gspread
@@ -224,6 +225,50 @@ def show_zoomable_page(png_bytes: bytes):
     )
 
 
+def enable_mobile_grade_inputs():
+    """Make grade fields replace-on-type and request a decimal phone keypad."""
+    components.html(
+        """
+        <script>
+        const doc = window.parent.document;
+
+        function enhanceGradeInputs() {
+          const inputs = doc.querySelectorAll(
+            '.st-key-grading_workspace input[type="number"]'
+          );
+
+          inputs.forEach((input) => {
+            input.setAttribute('inputmode', 'decimal');
+            input.setAttribute('enterkeyhint', 'done');
+
+            if (input.dataset.gradeInputEnhanced === 'true') return;
+            input.dataset.gradeInputEnhanced = 'true';
+
+            const selectCurrentValue = () => {
+              window.setTimeout(() => {
+                input.focus();
+                input.select();
+              }, 0);
+            };
+
+            input.addEventListener('focus', selectCurrentValue);
+            input.addEventListener('pointerup', (event) => {
+              event.preventDefault();
+              selectCurrentValue();
+            });
+          });
+        }
+
+        enhanceGradeInputs();
+        const observer = new MutationObserver(enhanceGradeInputs);
+        observer.observe(doc.body, {childList: true, subtree: true});
+        window.setTimeout(() => observer.disconnect(), 10000);
+        </script>
+        """,
+        height=0,
+    )
+
+
 def initialize_batch(
     scan,
     roster_scope,
@@ -430,6 +475,7 @@ with st.container(key="grading_workspace"):
                     min_value=0.5,
                     value=float(st.session_state.manual_possible_points),
                     step=0.5,
+                    format="%.2f",
                     key=f"manual_possible_{scan['id']}",
                     help="Used for every student's manual-total score in this batch.",
                 )
@@ -443,6 +489,7 @@ with st.container(key="grading_workspace"):
                     max_value=possible,
                     value=current_grade,
                     step=0.5,
+                    format="%.2f",
                     key=f"manual_grade_{scan['id']}_{selected_student}",
                 )
             else:
@@ -455,6 +502,7 @@ with st.container(key="grading_workspace"):
                         max_value=possible,
                         value=float(student_grades.get(question_id, 0)),
                         step=0.5,
+                        format="%.2f",
                         key=f"grade_{scan['id']}_{selected_student}_{question_id}",
                     )
             # Reassign the top-level object so Streamlit persists the edited values
@@ -464,6 +512,8 @@ with st.container(key="grading_workspace"):
             st.session_state.grades = all_grades
         else:
             st.info("Select a student before entering grades for this page.")
+
+enable_mobile_grade_inputs()
 
 # Navigation is applied only after the current page's widgets have copied their
 # values into the persistent grade dictionary above.
