@@ -7,6 +7,7 @@ from grader import (
     build_score_rows,
     date_for_assignment,
     find_student,
+    grade_count,
     grades_for_assignment,
     questions_for_assignment,
 )
@@ -142,6 +143,16 @@ def test_existing_numeric_scores_restore_but_blank_and_ae_do_not():
     assert grades_for_assignment(scores, "1.1 Exit Ticket.pdf") == {
         "Student One": {"1": 0.0}
     }
+
+
+def test_grade_count_uses_the_supplied_saved_snapshot():
+    required = ["1", "2"]
+    saved = {"Student One": {"1": 4.0}}
+    live_edits = {"Student One": {"1": 4.0, "2": 3.0}}
+
+    assert grade_count(saved, "Student One", required) == 1
+    assert grade_count(live_edits, "Student One", required) == 2
+    assert grade_count(saved, None, required) == 0
 
 
 def test_date_for_assignment_uses_lesson_prefix_not_today():
