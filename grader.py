@@ -195,6 +195,18 @@ def grades_for_assignment(scores: pd.DataFrame, filename: str) -> dict[str, dict
     return grades
 
 
+def grade_count(
+    grades: dict[str, dict[str, float]],
+    student: str | None,
+    required_questions: list[str],
+) -> int:
+    """Count required numeric grades in one in-memory or saved grade snapshot."""
+    if not student:
+        return 0
+    student_grades = grades.get(student, {})
+    return sum(question in student_grades for question in required_questions)
+
+
 def build_score_rows(
     students: list[str],
     questions: pd.DataFrame,
