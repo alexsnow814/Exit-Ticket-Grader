@@ -16,7 +16,6 @@ from grader import (
     build_manual_score_rows,
     build_score_rows,
     date_for_assignment,
-    grade_count,
     grades_for_assignment,
     identify_pages,
     questions_for_assignment,
@@ -281,6 +280,18 @@ def enable_mobile_grade_inputs():
         """,
         height=0,
     )
+
+
+def grade_count(
+    grades: dict[str, dict[str, float]],
+    student: str | None,
+    required_questions: list[str],
+) -> int:
+    """Count required grades in the supplied live or saved snapshot."""
+    if not student:
+        return 0
+    student_grades = grades.get(student, {})
+    return sum(question in student_grades for question in required_questions)
 
 
 def initialize_batch(
