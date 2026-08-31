@@ -16,6 +16,7 @@ from grader import (
     build_manual_score_rows,
     build_score_rows,
     date_for_assignment,
+    grade_count,
     grades_for_assignment,
     identify_pages,
     questions_for_assignment,
@@ -301,7 +302,15 @@ def initialize_batch(
     st.session_state.page_confidence = {
         match.page_index: match.confidence for match in matches
     }
-    st.session_state.grades = grades_for_assignment(existing_scores, scan["name"])
+    saved_grades = grades_for_assignment(existing_scores, scan["name"])
+    st.session_state.grades = {
+        student: dict(student_grades)
+        for student, student_grades in saved_grades.items()
+    }
+    st.session_state.saved_grades = {
+        student: dict(student_grades)
+        for student, student_grades in saved_grades.items()
+    }
     st.session_state.matches = matches
     st.session_state.questions = questions.to_dict("records")
     st.session_state.manual_grading = manual_grading
@@ -446,7 +455,10 @@ st.progress(
 document_options = ["Student work"]
 if answer_key:
     document_options.append("Answer key")
-display = st.radio("Document", document_options, horizontal=True)
+document_view_key = f"document_view_{scan['id']}"
+display = st.session_state.get(document_view_key, "Student work")
+if display not in document_options:
+    display = "Student work"
 
 previous, next_page = st.columns(2)
 go_previous = previous.button(
@@ -492,6 +504,12 @@ with st.container(key="grading_workspace"):
                 disabled=bool(duplicates),
             )
             student_status = status_area.empty()
+        st.radio(
+            "Document",
+            document_options,
+            horizontal=True,
+            key=document_view_key,
+        )
 
     with grade_column:
         if selected_student:
@@ -564,28 +582,12 @@ required_questions = (
 )
 
 
-def grade_count(student: str | None) -> int:
-    if not student:
-        return 0
-    student_grades = st.session_state.grades.get(student, {})
-    return sum(question in student_grades for question in required_questions)
-
-
-current_grade_count = grade_count(selected_student)
-if selected_student and current_grade_count == len(required_questions):
-    student_status.markdown("✅ **Graded**")
-elif selected_student:
-    student_status.markdown(
-        f"**Not yet graded**  \n{current_grade_count}/{len(required_questions)} entered"
-    )
-else:
-    student_status.markdown("**Not yet graded**")
-
 assigned_unique_students = sorted(set(assigned_expected_students))
 graded_students = [
     student
     for student in assigned_unique_students
-    if grade_count(student) == len(required_questions)
+    if grade_count(st.session_state.grades, student, required_questions)
+    == len(required_questions)
 ]
 ungraded_students = [
     student for student in assigned_unique_students if student not in graded_students
@@ -618,10 +620,31 @@ if save_progress:
         st.error("Scores could not be saved. Your page assignments and grades remain on screen.")
         st.caption(f"Connection detail: {exc}")
     else:
+        st.session_state.saved_grades = {
+            student: dict(student_grades)
+            for student, student_grades in st.session_state.grades.items()
+        }
         st.success(
             f"Progress saved: {len(graded_students)} graded, "
             f"{len(ungraded_students)} still to grade."
         )
+
+saved_grade_count = grade_count(
+    st.session_state.saved_grades,
+    selected_student,
+    required_questions,
+)
+if selected_student and saved_grade_count == len(required_questions):
+    student_status.markdown("✅ **Grades saved**")
+elif selected_student and saved_grade_count:
+    student_status.markdown(
+        f"⚠️ **Partially saved**  \n"
+        f"{saved_grade_count}/{len(required_questions)} grades saved"
+    )
+elif selected_student:
+    student_status.markdown("**Grades not saved**")
+else:
+    student_status.markdown("**No saved grades**")
 
 # Navigation is applied only after the current page's widgets have copied their
 # values into the persistent grade dictionary above.
