@@ -18,8 +18,11 @@ from grader import (
     date_for_assignment,
     grades_for_assignment,
     identify_pages,
+    mapped_score_keys,
+    merge_score_rows,
     questions_for_assignment,
     render_page,
+    unavailable_mapped_questions,
 )
 
 
@@ -179,7 +182,10 @@ def cached_identify(pdf_bytes: bytes, students: tuple[str, ...]):
     return identify_pages(pdf_bytes, list(students))
 
 
-def save_rows(rows: list[list[object]]):
+def save_rows(
+    rows: list[list[object]],
+    update_existing_only: set[tuple[str, str, str]] | None = None,
+):
     sheets, _ = google_clients()
     worksheet = sheets.worksheet("exit_ticket_scores")
     current = worksheet.get_all_values()
@@ -189,21 +195,7 @@ def save_rows(rows: list[list[object]]):
     if not set(SCORE_COLUMNS).issubset(header_map):
         raise ValueError("exit_ticket_scores has unexpected column headings")
 
-    key_columns = ["student", "exit_ticket", "question"]
-    positions = {
-        tuple(row[header_map[column]] for column in key_columns): index
-        for index, row in enumerate(data)
-        if len(row) >= len(header)
-    }
-    for new_row in rows:
-        row_by_name = dict(zip(SCORE_COLUMNS, new_row))
-        key = tuple(str(row_by_name[column]) for column in key_columns)
-        output = [row_by_name.get(column, "") for column in header]
-        if key in positions:
-            data[positions[key]] = output
-        else:
-            positions[key] = len(data)
-            data.append(output)
+    data = merge_score_rows(header, data, rows, update_existing_only)
 
     worksheet.update([header, *data], value_input_option="USER_ENTERED")
     load_sheet.clear()
@@ -313,7 +305,7 @@ def initialize_batch(
     st.session_state.page_confidence = {
         match.page_index: match.confidence for match in matches
     }
-    saved_grades = grades_for_assignment(existing_scores, scan["name"])
+    saved_grades = grades_for_assignment(existing_scores, scan["name"], questions)
     st.session_state.grades = {
         student: dict(student_grades)
         for student, student_grades in saved_grades.items()
@@ -324,6 +316,9 @@ def initialize_batch(
     }
     st.session_state.matches = matches
     st.session_state.questions = questions.to_dict("records")
+    st.session_state.unavailable_mapped_questions = unavailable_mapped_questions(
+        expected_students, questions, existing_scores
+    )
     st.session_state.manual_grading = manual_grading
     st.session_state.manual_possible_points = 5.0
     st.session_state.expected_students = expected_students
@@ -560,6 +555,16 @@ with st.container(key="grading_workspace"):
                 for question in st.session_state.questions:
                     question_id = str(question["question"])
                     possible = float(question["possible_points"])
+                    if (
+                        selected_student,
+                        question_id,
+                    ) in st.session_state.unavailable_mapped_questions:
+                        st.caption(
+                            f"{question_id}: no existing "
+                            f"{question.get('save_to_exit_ticket')} score row"
+                        )
+                        student_grades.pop(question_id, None)
+                        continue
                     entered_grade = st.number_input(
                         f"{question_id} (/{possible:g})",
                         min_value=0.0,
@@ -593,12 +598,23 @@ required_questions = (
 )
 
 
+def required_for_student(student: str | None) -> list[str]:
+    if not student:
+        return required_questions
+    unavailable = st.session_state.get("unavailable_mapped_questions", set())
+    return [
+        question
+        for question in required_questions
+        if (student, question) not in unavailable
+    ]
+
+
 assigned_unique_students = sorted(set(assigned_expected_students))
 graded_students = [
     student
     for student in assigned_unique_students
-    if grade_count(st.session_state.grades, student, required_questions)
-    == len(required_questions)
+    if grade_count(st.session_state.grades, student, required_for_student(student))
+    == len(required_for_student(student))
 ]
 ungraded_students = [
     student for student in assigned_unique_students if student not in graded_students
@@ -626,7 +642,12 @@ if save_progress:
                 exit_ticket_date,
                 set(missing_students),
             )
-        save_rows(score_rows)
+        existing_only = (
+            set()
+            if st.session_state.manual_grading
+            else mapped_score_keys(expected_students, batch_questions)
+        )
+        save_rows(score_rows, existing_only)
     except Exception as exc:
         st.error("Scores could not be saved. Your page assignments and grades remain on screen.")
         st.caption(f"Connection detail: {exc}")
@@ -640,17 +661,18 @@ if save_progress:
             f"{len(ungraded_students)} still to grade."
         )
 
+selected_required_questions = required_for_student(selected_student)
 saved_grade_count = grade_count(
     st.session_state.saved_grades,
     selected_student,
-    required_questions,
+    selected_required_questions,
 )
-if selected_student and saved_grade_count == len(required_questions):
+if selected_student and saved_grade_count == len(selected_required_questions):
     student_status.markdown("✅ **Grades saved**")
 elif selected_student and saved_grade_count:
     student_status.markdown(
         f"⚠️ **Partially saved**  \n"
-        f"{saved_grade_count}/{len(required_questions)} grades saved"
+        f"{saved_grade_count}/{len(selected_required_questions)} grades saved"
     )
 elif selected_student:
     student_status.markdown("**Grades not saved**")
