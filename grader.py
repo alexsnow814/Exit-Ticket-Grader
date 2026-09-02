@@ -170,16 +170,54 @@ def questions_for_assignment(
     return questions.loc[mask].copy().reset_index(drop=True)
 
 
-def grades_for_assignment(scores: pd.DataFrame, filename: str) -> dict[str, dict[str, float]]:
+def question_score_ticket(question: object) -> str:
+    """Return the ticket whose score row a displayed question should update."""
+    if hasattr(question, "get"):
+        mapped = question.get("save_to_exit_ticket", "")
+        if not pd.isna(mapped) and str(mapped).strip():
+            return str(mapped).strip()
+        displayed = question.get("exit_ticket", "")
+        return "" if pd.isna(displayed) else str(displayed).strip()
+    return ""
+
+
+def question_is_mapped(question: object) -> bool:
+    displayed = question.get("exit_ticket", "") if hasattr(question, "get") else ""
+    return assignment_key(question_score_ticket(question)) != assignment_key(
+        str(displayed)
+    )
+
+
+def grades_for_assignment(
+    scores: pd.DataFrame,
+    filename: str,
+    questions: pd.DataFrame | None = None,
+) -> dict[str, dict[str, float]]:
     """Restore previously entered numeric scores for one exit ticket."""
     required = {"student", "exit_ticket", "question", "awarded_points"}
     if scores.empty or not required.issubset(scores.columns):
         return {}
 
     target = assignment_key(filename)
-    selected = scores.loc[
-        scores["exit_ticket"].map(assignment_key).eq(target)
-    ]
+    expected_sources = None
+    if questions is not None and not questions.empty:
+        expected_sources = {
+            (assignment_key(question_score_ticket(question)), str(question["question"]))
+            for _, question in questions.iterrows()
+        }
+        selected = scores.loc[
+            scores.apply(
+                lambda row: (
+                    assignment_key(row["exit_ticket"]), str(row["question"])
+                )
+                in expected_sources,
+                axis=1,
+            )
+        ]
+    else:
+        selected = scores.loc[
+            scores["exit_ticket"].map(assignment_key).eq(target)
+        ]
     grades: dict[str, dict[str, float]] = {}
     for _, row in selected.iterrows():
         awarded = row["awarded_points"]
@@ -220,7 +258,13 @@ def build_score_rows(
         student_grades = grades.get(student, {})
         for _, question in questions.iterrows():
             question_id = str(question["question"])
-            awarded = (
+            mapped = question_is_mapped(question)
+            if mapped and question_id not in student_grades:
+                # A missing page on the newer ticket must not erase an older
+                # score. Only an explicitly loaded or entered numeric grade may
+                # update a mapped historical question.
+                continue
+            awarded = student_grades.get(question_id, "") if mapped else (
                 "AE"
                 if student in absent_students
                 else student_grades.get(question_id, "")
@@ -229,7 +273,7 @@ def build_score_rows(
                 [
                     student,
                     question["standard"],
-                    question["exit_ticket"],
+                    question_score_ticket(question),
                     exit_ticket_date,
                     question_id,
                     float(question["possible_points"]),
@@ -237,6 +281,84 @@ def build_score_rows(
                 ]
             )
     return rows
+
+
+def mapped_score_keys(
+    students: list[str], questions: pd.DataFrame
+) -> set[tuple[str, str, str]]:
+    """Keys that may update existing score rows but may never create new ones."""
+    return {
+        (student, question_score_ticket(question), str(question["question"]))
+        for student in students
+        for _, question in questions.iterrows()
+        if question_is_mapped(question)
+    }
+
+
+def unavailable_mapped_questions(
+    students: list[str], questions: pd.DataFrame, scores: pd.DataFrame
+) -> set[tuple[str, str]]:
+    """Mapped UI fields that have no historical score row to update."""
+    required = {"student", "exit_ticket", "question"}
+    existing = set()
+    if not scores.empty and required.issubset(scores.columns):
+        existing = {
+            (
+                str(row["student"]),
+                assignment_key(row["exit_ticket"]),
+                str(row["question"]),
+            )
+            for _, row in scores.iterrows()
+        }
+    return {
+        (student, str(question["question"]))
+        for student in students
+        for _, question in questions.iterrows()
+        if question_is_mapped(question)
+        and (
+            student,
+            assignment_key(question_score_ticket(question)),
+            str(question["question"]),
+        )
+        not in existing
+    }
+
+
+def merge_score_rows(
+    header: list[str],
+    data: list[list[object]],
+    rows: list[list[object]],
+    update_existing_only: set[tuple[str, str, str]] | None = None,
+) -> list[list[object]]:
+    """Merge score rows while protecting mapped historical records."""
+    update_existing_only = update_existing_only or set()
+    header_map = {name: index for index, name in enumerate(header)}
+    key_columns = ["student", "exit_ticket", "question"]
+    positions = {
+        tuple(str(row[header_map[column]]) for column in key_columns): index
+        for index, row in enumerate(data)
+        if len(row) >= len(header)
+    }
+    for new_row in rows:
+        row_by_name = dict(zip(SCORE_COLUMNS, new_row))
+        key = tuple(str(row_by_name[column]) for column in key_columns)
+        output = [row_by_name.get(column, "") for column in header]
+        if key in positions:
+            if key in update_existing_only:
+                data[positions[key]][header_map["awarded_points"]] = row_by_name[
+                    "awarded_points"
+                ]
+            else:
+                data[positions[key]] = output
+        elif key in update_existing_only:
+            raise ValueError(
+                "Mapped score could not be saved because the original row does not "
+                f"exist: {key[0]} — {key[1]} — {key[2]}"
+            )
+        else:
+            positions[key] = len(data)
+            data.append(output)
+    return data
 
 
 def build_manual_score_rows(
