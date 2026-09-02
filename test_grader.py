@@ -9,7 +9,10 @@ from grader import (
     find_student,
     grade_count,
     grades_for_assignment,
+    mapped_score_keys,
+    merge_score_rows,
     questions_for_assignment,
+    unavailable_mapped_questions,
 )
 
 
@@ -143,6 +146,108 @@ def test_existing_numeric_scores_restore_but_blank_and_ae_do_not():
     assert grades_for_assignment(scores, "1.1 Exit Ticket.pdf") == {
         "Student One": {"1": 0.0}
     }
+
+
+def test_mapped_questions_display_on_new_ticket_but_restore_and_save_old_scores():
+    questions = pd.DataFrame([
+        {
+            "exit_ticket": "1.2 Exit Ticket",
+            "save_to_exit_ticket": "",
+            "question": "7a",
+            "standard": "S-ID.A.2",
+            "possible_points": 5,
+        },
+        {
+            "exit_ticket": "1.2 Exit Ticket",
+            "save_to_exit_ticket": "1.1 Exit Ticket",
+            "question": "7b",
+            "standard": "S-ID.A.2",
+            "possible_points": 5,
+        },
+    ])
+    scores = pd.DataFrame([
+        {"student": "Student One", "exit_ticket": "1.2 Exit Ticket", "question": "7a", "awarded_points": 3},
+        {"student": "Student One", "exit_ticket": "1.1 Exit Ticket", "question": "7b", "awarded_points": 4},
+    ])
+
+    selected = questions_for_assignment(questions, "1.2 Exit Ticket.pdf")
+    assert grades_for_assignment(scores, "1.2 Exit Ticket.pdf", selected) == {
+        "Student One": {"7a": 3.0, "7b": 4.0}
+    }
+    rows = build_score_rows(
+        ["Student One"], selected, {"Student One": {"7a": 3, "7b": 5}}, "2026-09-01"
+    )
+    assert [row[2] for row in rows] == ["1.2 Exit Ticket", "1.1 Exit Ticket"]
+    assert mapped_score_keys(["Student One"], selected) == {
+        ("Student One", "1.1 Exit Ticket", "7b")
+    }
+
+
+def test_ungraded_mapped_question_does_not_overwrite_old_score_with_absent():
+    questions = pd.DataFrame([
+        {
+            "exit_ticket": "1.2 Exit Ticket",
+            "save_to_exit_ticket": "1.1 Exit Ticket",
+            "question": "7b",
+            "standard": "S-ID.A.2",
+            "possible_points": 5,
+        }
+    ])
+    assert build_score_rows(
+        ["Student One"], questions, {}, "2026-09-01", {"Student One"}
+    ) == []
+
+
+def test_mapped_merge_updates_only_awarded_points_and_never_appends():
+    header = [
+        "student", "standard", "exit_ticket", "exit_ticket_date",
+        "question", "possible_points", "awarded_points",
+    ]
+    current = [[
+        "Student One", "OLD-STANDARD", "1.1 Exit Ticket", "2026-08-31",
+        "7b", "5", "3",
+    ]]
+    incoming = [[
+        "Student One", "NEW-STANDARD", "1.1 Exit Ticket", "2026-09-01",
+        "7b", 5, 4,
+    ]]
+    protected = {("Student One", "1.1 Exit Ticket", "7b")}
+    assert merge_score_rows(header, current, incoming, protected) == [[
+        "Student One", "OLD-STANDARD", "1.1 Exit Ticket", "2026-08-31",
+        "7b", "5", 4,
+    ]]
+
+    missing = [[
+        "Student Two", "S-ID.A.2", "1.1 Exit Ticket", "2026-09-01",
+        "7b", 5, 4,
+    ]]
+    try:
+        merge_score_rows(
+            header, current, missing,
+            {("Student Two", "1.1 Exit Ticket", "7b")},
+        )
+    except ValueError as error:
+        assert "original row does not exist" in str(error)
+    else:
+        raise AssertionError("A mapped score must never create a new row")
+
+
+def test_student_without_historical_row_has_no_mapped_input():
+    questions = pd.DataFrame([
+        {
+            "exit_ticket": "1.2 Exit Ticket",
+            "save_to_exit_ticket": "1.1 Exit Ticket",
+            "question": "7b",
+            "standard": "S-ID.A.2",
+            "possible_points": 5,
+        }
+    ])
+    scores = pd.DataFrame([
+        {"student": "Existing Student", "exit_ticket": "1.1 Exit Ticket", "question": "7b"}
+    ])
+    assert unavailable_mapped_questions(
+        ["Existing Student", "New Student"], questions, scores
+    ) == {("New Student", "7b")}
 
 
 def test_grade_count_uses_the_supplied_saved_snapshot():
