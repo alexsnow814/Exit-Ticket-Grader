@@ -331,7 +331,9 @@ def initialize_batch(
         st.session_state.visible_page_indices = [
             match.page_index
             for match in matches
-            if match.student in expected_set
+            # An unmatched page may be a printed "Extra" copy.  It must stay
+            # visible so the teacher can assign it to a student in this period.
+            if match.student is None or match.student in expected_set
         ]
 
 
@@ -432,8 +434,8 @@ matches = st.session_state.matches
 visible_page_indices = st.session_state.visible_page_indices
 if not visible_page_indices:
     st.warning(
-        f"No pages were automatically matched to {roster_scope}. Choose All students "
-        "to review and correct unmatched pages."
+        f"No pages were found for {roster_scope}. Choose All students to review "
+        "pages matched to a different period."
     )
     st.stop()
 page_count = len(visible_page_indices)
@@ -456,7 +458,7 @@ duplicates = sorted(
 
 st.progress(
     (page_position + 1) / page_count,
-    text=f"{roster_scope}: student {page_position + 1} of {page_count}",
+    text=f"{roster_scope}: page {page_position + 1} of {page_count}",
 )
 document_options = ["Student work"]
 if answer_key:
@@ -485,7 +487,13 @@ selected = st.selectbox(
 )
 selected_student = None if selected.startswith("—") else selected
 st.session_state.page_students[page_index] = selected_student
-st.caption(f"Automatic name-match confidence: {confidence}%")
+if current_student is None:
+    st.caption(
+        "No student name was detected. If this is an Extra copy, choose the "
+        "student who completed it."
+    )
+else:
+    st.caption(f"Automatic name-match confidence: {confidence}%")
 
 with st.container(key="grading_workspace"):
     work_column, grade_column = st.columns(

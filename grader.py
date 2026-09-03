@@ -106,6 +106,13 @@ def extract_page_text(pdf_bytes: bytes, page_index: int) -> str:
 
 def find_student(text: str, students: list[str], minimum_score: int = 72):
     normalized_text = normalize(text)
+
+    # Blank copies are printed with "Extra" in the name area.  Keep those
+    # pages deliberately unassigned instead of letting fuzzy matching choose a
+    # student from unrelated question text elsewhere on the page.
+    if "extra" in normalized_text.split()[:30]:
+        return None, 100
+
     for student in students:
         if normalize(student) in normalized_text:
             return student, 100

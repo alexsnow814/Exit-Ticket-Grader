@@ -28,6 +28,12 @@ def test_find_student_exact_and_fuzzy():
     assert find_student("CarIos Castillo Aguirre", roster)[0] == "Carlos Castillo Aguirre"
 
 
+def test_extra_copy_stays_unassigned_for_manual_student_selection():
+    roster = ["Wilson Example", "Extraordinary Student"]
+    text = "1.4 Exit Ticket  Extra  Calculate the median and explain your work."
+    assert find_student(text, roster) == (None, 100)
+
+
 def test_question_filter_and_absent_student_ae():
     questions = pd.DataFrame([
         {"course_level": "Regular", "exit_ticket": "1.1 Exit Ticket", "question": "5", "standard": "S-ID.A.2", "possible_points": 5},
