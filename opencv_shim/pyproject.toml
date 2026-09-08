@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opencv-python"
+version = "4.12.0.88"
+description = "Headless OpenCV compatibility shim for cloud deployment"
+dependencies = ["opencv-python-headless==4.12.0.88"]
+
+[tool.setuptools]
+py-modules = []
