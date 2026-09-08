@@ -11,6 +11,7 @@ answer key, and writes question-level grades to Google Sheets.
 - Answer keys folder ID: `1kpaqfrxtGRsk0yBmpy31MGWwyOqaaWx6`
 - Score tab: `exit_ticket_scores`
 - Question configuration tab: `exit_ticket_questions`
+- Lesson-date lookup tab: `exit_ticket_dates`
 - Roster tab: `students`
 
 The service-account email in Streamlit secrets needs Viewer access to both
@@ -22,8 +23,10 @@ reliable for the Drive API.
 
 1. Create `.streamlit/secrets.toml` by copying the secrets from the existing app.
 2. Install requirements: `python3 -m pip install -r requirements.txt`
-3. Install Tesseract OCR: `brew install tesseract`
-4. Run: `python3 -m streamlit run app.py`
+3. Run: `python3 -m streamlit run app.py`
+
+OCR is provided by the Python dependencies in `requirements.txt`; no operating
+system package installation is required.
 
 The app only writes to the spreadsheet after **Save and finalize batch** is
 pressed. Until then, page assignments and grades stay in the Streamlit session.
@@ -33,7 +36,7 @@ pressed. Until then, page assignments and grades stay in the Streamlit session.
 No code change or redeployment is needed when students, questions, scans, or
 answer keys change:
 
-- Edit the `students` and `exit_ticket_questions` tabs in Google Sheets.
+- Edit the `students`, `exit_ticket_questions`, and `exit_ticket_dates` tabs in Google Sheets.
 - Add incoming scans and answer keys to their existing Google Drive folders.
 - Refresh the browser page to load the latest data. The short data caches also
   refresh automatically while the app remains open.

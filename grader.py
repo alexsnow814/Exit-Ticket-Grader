@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import re
-import subprocess
 import unicodedata
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from functools import lru_cache
+from io import BytesIO
 from numbers import Real
 
+import numpy as np
 import pandas as pd
+from PIL import Image
 
 
 SCORE_COLUMNS = [
@@ -82,6 +85,14 @@ def render_page(pdf_bytes: bytes, page_index: int, zoom: float = 1.6) -> bytes:
         document.close()
 
 
+@lru_cache(maxsize=1)
+def _ocr_engine():
+    """Load RapidOCR once per Python process instead of once per PDF page."""
+    from rapidocr import RapidOCR
+
+    return RapidOCR()
+
+
 def extract_page_text(pdf_bytes: bytes, page_index: int) -> str:
     import fitz
 
@@ -92,14 +103,9 @@ def extract_page_text(pdf_bytes: bytes, page_index: int) -> str:
         if embedded:
             return embedded
         pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-        completed = subprocess.run(
-            ["tesseract", "stdin", "stdout"],
-            input=pixmap.tobytes("png"),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True,
-        )
-        return completed.stdout.decode("utf-8", errors="replace")
+        image = Image.open(BytesIO(pixmap.tobytes("png"))).convert("RGB")
+        result = _ocr_engine()(np.asarray(image))
+        return "\n".join(result.txts or ())
     finally:
         document.close()
 
