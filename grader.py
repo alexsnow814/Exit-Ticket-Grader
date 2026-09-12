@@ -104,7 +104,13 @@ def extract_page_text(pdf_bytes: bytes, page_index: int) -> str:
             return embedded
         pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
         image = Image.open(BytesIO(pixmap.tobytes("png"))).convert("RGB")
-        result = _ocr_engine()(np.asarray(image))
+        try:
+            result = _ocr_engine()(np.asarray(image))
+        except (ImportError, ModuleNotFoundError, OSError):
+            # A cloud image can briefly be rebuilt without OpenCV's Linux
+            # runtime libraries. Keep the batch usable: unmatched pages remain
+            # available for manual student assignment instead of crashing.
+            return ""
         return "\n".join(result.txts or ())
     finally:
         document.close()
@@ -264,8 +270,10 @@ def build_score_rows(
     grades: dict[str, dict[str, float]],
     exit_ticket_date: str,
     absent_students: set[str] | None = None,
+    ticket_dates: dict[str, str] | None = None,
 ) -> list[list[object]]:
     absent_students = absent_students or set()
+    ticket_dates = ticket_dates or {}
     rows = []
     for student in students:
         student_grades = grades.get(student, {})
@@ -287,7 +295,10 @@ def build_score_rows(
                     student,
                     question["standard"],
                     question_score_ticket(question),
-                    exit_ticket_date,
+                    ticket_dates.get(
+                        assignment_key(question_score_ticket(question)),
+                        exit_ticket_date,
+                    ),
                     question_id,
                     float(question["possible_points"]),
                     awarded if awarded == "AE" or awarded == "" else float(awarded),
@@ -343,7 +354,7 @@ def merge_score_rows(
     rows: list[list[object]],
     update_existing_only: set[tuple[str, str, str]] | None = None,
 ) -> list[list[object]]:
-    """Merge score rows while protecting mapped historical records."""
+    """Merge score rows while keeping mapped questions on one canonical row."""
     update_existing_only = update_existing_only or set()
     header_map = {name: index for index, name in enumerate(header)}
     key_columns = ["student", "exit_ticket", "question"]
@@ -363,11 +374,6 @@ def merge_score_rows(
                 ]
             else:
                 data[positions[key]] = output
-        elif key in update_existing_only:
-            raise ValueError(
-                "Mapped score could not be saved because the original row does not "
-                f"exist: {key[0]} — {key[1]} — {key[2]}"
-            )
         else:
             positions[key] = len(data)
             data.append(output)

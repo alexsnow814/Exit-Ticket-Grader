@@ -12,7 +12,6 @@ from grader import (
     mapped_score_keys,
     merge_score_rows,
     questions_for_assignment,
-    unavailable_mapped_questions,
 )
 
 
@@ -204,7 +203,7 @@ def test_ungraded_mapped_question_does_not_overwrite_old_score_with_absent():
     ) == []
 
 
-def test_mapped_merge_updates_only_awarded_points_and_never_appends():
+def test_mapped_merge_updates_only_awarded_points_and_uses_one_canonical_row():
     header = [
         "student", "standard", "exit_ticket", "exit_ticket_date",
         "question", "possible_points", "awarded_points",
@@ -227,18 +226,14 @@ def test_mapped_merge_updates_only_awarded_points_and_never_appends():
         "Student Two", "S-ID.A.2", "1.1 Exit Ticket", "2026-09-01",
         "7b", 5, 4,
     ]]
-    try:
-        merge_score_rows(
-            header, current, missing,
-            {("Student Two", "1.1 Exit Ticket", "7b")},
-        )
-    except ValueError as error:
-        assert "original row does not exist" in str(error)
-    else:
-        raise AssertionError("A mapped score must never create a new row")
+    merged = merge_score_rows(
+        header, current, missing,
+        {("Student Two", "1.1 Exit Ticket", "7b")},
+    )
+    assert merged[-1] == missing[0]
 
 
-def test_student_without_historical_row_has_no_mapped_input():
+def test_new_mapped_score_uses_the_original_ticket_date():
     questions = pd.DataFrame([
         {
             "exit_ticket": "1.2 Exit Ticket",
@@ -248,12 +243,16 @@ def test_student_without_historical_row_has_no_mapped_input():
             "possible_points": 5,
         }
     ])
-    scores = pd.DataFrame([
-        {"student": "Existing Student", "exit_ticket": "1.1 Exit Ticket", "question": "7b"}
-    ])
-    assert unavailable_mapped_questions(
-        ["Existing Student", "New Student"], questions, scores
-    ) == {("New Student", "7b")}
+    rows = build_score_rows(
+        ["New Student"],
+        questions,
+        {"New Student": {"7b": 5}},
+        "2026-09-01",
+        ticket_dates={assignment_key("1.1 Exit Ticket"): "2026-08-31"},
+    )
+    assert rows[0][2] == "1.1 Exit Ticket"
+    assert rows[0][3] == "2026-08-31"
+    assert rows[0][-1] == 5.0
 
 
 def test_grade_count_uses_the_supplied_saved_snapshot():

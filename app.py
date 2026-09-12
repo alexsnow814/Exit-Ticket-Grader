@@ -20,9 +20,9 @@ from grader import (
     identify_pages,
     mapped_score_keys,
     merge_score_rows,
+    question_score_ticket,
     questions_for_assignment,
     render_page,
-    unavailable_mapped_questions,
 )
 
 
@@ -316,9 +316,6 @@ def initialize_batch(
     }
     st.session_state.matches = matches
     st.session_state.questions = questions.to_dict("records")
-    st.session_state.unavailable_mapped_questions = unavailable_mapped_questions(
-        expected_students, questions, existing_scores
-    )
     st.session_state.manual_grading = manual_grading
     st.session_state.manual_possible_points = 5.0
     st.session_state.expected_students = expected_students
@@ -563,16 +560,6 @@ with st.container(key="grading_workspace"):
                 for question in st.session_state.questions:
                     question_id = str(question["question"])
                     possible = float(question["possible_points"])
-                    if (
-                        selected_student,
-                        question_id,
-                    ) in st.session_state.unavailable_mapped_questions:
-                        st.caption(
-                            f"{question_id}: no existing "
-                            f"{question.get('save_to_exit_ticket')} score row"
-                        )
-                        student_grades.pop(question_id, None)
-                        continue
                     entered_grade = st.number_input(
                         f"{question_id} (/{possible:g})",
                         min_value=0.0,
@@ -607,14 +594,7 @@ required_questions = (
 
 
 def required_for_student(student: str | None) -> list[str]:
-    if not student:
-        return required_questions
-    unavailable = st.session_state.get("unavailable_mapped_questions", set())
-    return [
-        question
-        for question in required_questions
-        if (student, question) not in unavailable
-    ]
+    return required_questions
 
 
 assigned_unique_students = sorted(set(assigned_expected_students))
@@ -643,12 +623,21 @@ if save_progress:
             )
         else:
             batch_questions = pd.DataFrame(st.session_state.questions)
+            score_ticket_dates = {}
+            for question in st.session_state.questions:
+                score_ticket = question_score_ticket(question)
+                score_date = date_for_assignment(
+                    exit_ticket_dates_df, f"{score_ticket}.pdf"
+                )
+                if score_date:
+                    score_ticket_dates[assignment_key(score_ticket)] = score_date
             score_rows = build_score_rows(
                 expected_students,
                 batch_questions,
                 st.session_state.grades,
                 exit_ticket_date,
                 set(missing_students),
+                ticket_dates=score_ticket_dates,
             )
         existing_only = (
             set()

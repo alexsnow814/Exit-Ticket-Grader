@@ -40,3 +40,11 @@ answer keys change:
 - Add incoming scans and answer keys to their existing Google Drive folders.
 - Refresh the browser page to load the latest data. The short data caches also
   refresh automatically while the app remains open.
+
+## Questions repeated on later exit tickets
+
+To show an earlier question on a later grading page, duplicate its configuration
+row in `exit_ticket_questions`, change `exit_ticket` to the later ticket, and put
+the original ticket in `save_to_exit_ticket`. The app will display the same saved
+score on every configured copy. Saving from any copy updates the single original
+ticket record, so the question contributes only to the original ticket's grade.
