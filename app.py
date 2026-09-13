@@ -637,8 +637,16 @@ if save_progress:
                 st.session_state.grades,
                 exit_ticket_date,
                 set(missing_students),
-                ticket_dates=score_ticket_dates,
             )
+            # Apply mapped ticket dates here instead of requiring the imported
+            # grader module to accept a newly added keyword argument. Streamlit
+            # can hot-reload this file while retaining an older imported
+            # grader.py module, which previously made every save fail with an
+            # unexpected ticket_dates argument.
+            for score_row in score_rows:
+                score_row[3] = score_ticket_dates.get(
+                    assignment_key(score_row[2]), score_row[3]
+                )
         existing_only = (
             set()
             if st.session_state.manual_grading
