@@ -144,15 +144,22 @@ def google_clients():
     return sheets, drive
 
 
-@st.cache_data(ttl=30)
 def list_pdfs(folder_id: str):
+    """Return the current PDF inventory directly from Drive.
+
+    This deliberately is not cached. New scans are commonly uploaded while the
+    grader is already open, and a cached folder listing can leave the dropdown
+    showing an older inventory even after a Streamlit rerun.
+    """
     _, drive = google_clients()
     response = drive.get(
         "https://www.googleapis.com/drive/v3/files",
         params={
             "q": f"'{folder_id}' in parents and trashed = false and mimeType = 'application/pdf'",
             "fields": "files(id,name,modifiedTime,size)",
-            "orderBy": "name",
+            # Put a newly uploaded batch at the top of the dropdown while still
+            # keeping same-time uploads deterministic.
+            "orderBy": "modifiedTime desc,name",
             "pageSize": 1000,
         },
     )
@@ -174,7 +181,16 @@ def download_file(file_id: str) -> bytes:
 @st.cache_data(ttl=60)
 def load_sheet(name: str) -> pd.DataFrame:
     sheets, _ = google_clients()
-    return pd.DataFrame(sheets.worksheet(name).get_all_records())
+    worksheet = sheets.worksheet(name)
+    if name == "exit_ticket_dates":
+        # Lesson identifiers such as 1.10 must remain text. get_all_records()
+        # reads that displayed value as the number 1.1, which prevents the
+        # uploaded 1.10 PDF from matching its scheduled date.
+        values = worksheet.get_all_values(value_render_option="FORMATTED_VALUE")
+        if not values:
+            return pd.DataFrame()
+        return pd.DataFrame(values[1:], columns=values[0])
+    return pd.DataFrame(worksheet.get_all_records())
 
 
 @st.cache_data(show_spinner="Reading student names from the scanned pages…")
@@ -642,7 +658,7 @@ if save_progress:
             # grader module to accept a newly added keyword argument. Streamlit
             # can hot-reload this file while retaining an older imported
             # grader.py module, which previously made every save fail with an
-            # unexpected ticket_dates argument.
+            # unexpected ``ticket_dates`` argument.
             for score_row in score_rows:
                 score_row[3] = score_ticket_dates.get(
                     assignment_key(score_row[2]), score_row[3]

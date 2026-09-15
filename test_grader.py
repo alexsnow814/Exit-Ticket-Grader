@@ -269,6 +269,7 @@ def test_date_for_assignment_uses_lesson_prefix_not_today():
     schedule = pd.DataFrame([
         {"lesson": "0.2", "exit_ticket_date": "8/26/2026"},
         {"lesson": "1.8", "exit_ticket_date": 46276},
+        {"lesson": "1.10", "exit_ticket_date": "9/15/2026"},
     ])
 
     assert date_for_assignment(schedule, "0.2 Exit Ticket.pdf") == "2026-08-26"
@@ -276,4 +277,5 @@ def test_date_for_assignment_uses_lesson_prefix_not_today():
         date_for_assignment(schedule, "1.8 Exit Ticket - Back Side.pdf")
         == "2026-09-11"
     )
+    assert date_for_assignment(schedule, "1.10 Exit Ticket.pdf") == "2026-09-15"
     assert date_for_assignment(schedule, "9.9 Exit Ticket.pdf") is None
