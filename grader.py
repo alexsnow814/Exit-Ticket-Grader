@@ -5,12 +5,11 @@ import unicodedata
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from functools import lru_cache
-from io import BytesIO
 from numbers import Real
+from threading import Lock
 
 import numpy as np
 import pandas as pd
-from PIL import Image
 
 
 SCORE_COLUMNS = [
@@ -24,6 +23,7 @@ SCORE_COLUMNS = [
 ]
 MANUAL_QUESTION = "Manual total"
 MANUAL_STANDARD = "Manual grading"
+_OCR_LOCK = Lock()
 
 
 @dataclass(frozen=True)
@@ -90,7 +90,37 @@ def _ocr_engine():
     """Load RapidOCR once per Python process instead of once per PDF page."""
     from rapidocr import RapidOCR
 
-    return RapidOCR()
+    return RapidOCR(params={
+        "EngineConfig.onnxruntime.intra_op_num_threads": 1,
+        "EngineConfig.onnxruntime.inter_op_num_threads": 1,
+    })
+
+
+def _extract_header_text(page) -> str:
+    """Recognize names without rasterizing the question/work portion of a scan."""
+    import fitz
+
+    header = fitz.Rect(page.rect)
+    header.y1 = header.y0 + header.height * 0.20
+    embedded = page.get_text("text", clip=header).strip()
+    if embedded:
+        return embedded
+    # Cap the width even for unusually large scanner page dimensions.
+    zoom = min(2.0, 1400 / header.width)
+    pixmap = page.get_pixmap(
+        matrix=fitz.Matrix(zoom, zoom), clip=header,
+        colorspace=fitz.csRGB, alpha=False,
+    )
+    image = np.frombuffer(pixmap.samples, dtype=np.uint8).reshape(
+        pixmap.height, pixmap.width, 3
+    )
+    try:
+        # Concurrent sessions must not multiply model initialization/inference.
+        with _OCR_LOCK:
+            result = _ocr_engine()(image)
+    except (ImportError, ModuleNotFoundError, OSError):
+        return ""
+    return "\n".join(result.txts or ())
 
 
 def extract_page_text(pdf_bytes: bytes, page_index: int) -> str:
@@ -98,20 +128,7 @@ def extract_page_text(pdf_bytes: bytes, page_index: int) -> str:
 
     document = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
-        page = document.load_page(page_index)
-        embedded = page.get_text("text").strip()
-        if embedded:
-            return embedded
-        pixmap = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-        image = Image.open(BytesIO(pixmap.tobytes("png"))).convert("RGB")
-        try:
-            result = _ocr_engine()(np.asarray(image))
-        except (ImportError, ModuleNotFoundError, OSError):
-            # A cloud image can briefly be rebuilt without OpenCV's Linux
-            # runtime libraries. Keep the batch usable: unmatched pages remain
-            # available for manual student assignment instead of crashing.
-            return ""
-        return "\n".join(result.txts or ())
+        return _extract_header_text(document.load_page(page_index))
     finally:
         document.close()
 
@@ -162,13 +179,14 @@ def identify_pages(pdf_bytes: bytes, students: list[str]) -> list[PageMatch]:
     import fitz
 
     document = fitz.open(stream=pdf_bytes, filetype="pdf")
-    page_count = document.page_count
-    document.close()
     matches = []
-    for page_index in range(page_count):
-        text = extract_page_text(pdf_bytes, page_index)
-        student, confidence = find_student(text, students)
-        matches.append(PageMatch(page_index, student, confidence, text))
+    try:
+        for page_index in range(document.page_count):
+            text = _extract_header_text(document.load_page(page_index))
+            student, confidence = find_student(text, students)
+            matches.append(PageMatch(page_index, student, confidence, text))
+    finally:
+        document.close()
     return matches
 
 
