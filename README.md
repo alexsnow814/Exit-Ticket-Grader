@@ -48,3 +48,17 @@ row in `exit_ticket_questions`, change `exit_ticket` to the later ticket, and pu
 the original ticket in `save_to_exit_ticket`. The app will display the same saved
 score on every configured copy. Saving from any copy updates the single original
 ticket record, so the question contributes only to the original ticket's grade.
+# Multiple scan files per exit ticket
+
+Inside Incoming Scans, create a folder named exactly like the exit ticket
+(for example, `1.10 Exit Ticket`) and upload every corresponding PDF into it.
+The filenames inside that folder can be anything. PDFs are read alphabetically
+by filename, with pages within each file kept in their original order. The app
+shows them as one continuous batch and keeps the existing student assignment,
+grading, answer-key, and saved-score behavior. Non-PDF files are ignored.
+Front and back tickets that have separate answer keys keep separate folders.
+
+Refresh the page after adding or replacing a PDF, then process the batch again.
+Previously saved grades are reloaded from the spreadsheet; save in-progress
+grades before refreshing. Loose PDFs in Incoming Scans remain supported for
+backward compatibility. No combined file is uploaded to Drive.

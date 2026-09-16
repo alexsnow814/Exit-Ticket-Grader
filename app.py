@@ -8,6 +8,7 @@ import streamlit.components.v1 as components
 from google.oauth2.service_account import Credentials
 from google.auth.transport.requests import AuthorizedSession
 import gspread
+from drive_batches import PDF_MIME, combine_pdfs, list_batches, list_children
 
 from grader import (
     MANUAL_QUESTION,
@@ -152,23 +153,11 @@ def list_pdfs(folder_id: str):
     showing an older inventory even after a Streamlit rerun.
     """
     _, drive = google_clients()
-    response = drive.get(
-        "https://www.googleapis.com/drive/v3/files",
-        params={
-            "q": f"'{folder_id}' in parents and trashed = false and mimeType = 'application/pdf'",
-            "fields": "files(id,name,modifiedTime,size)",
-            # Put a newly uploaded batch at the top of the dropdown while still
-            # keeping same-time uploads deterministic.
-            "orderBy": "modifiedTime desc,name",
-            "pageSize": 1000,
-        },
-    )
-    response.raise_for_status()
-    return response.json().get("files", [])
+    return [item for item in list_children(drive, folder_id) if item['mimeType'] == PDF_MIME]
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def download_file(file_id: str) -> bytes:
+def download_file(file_id: str, revision: str = "", size: str = "") -> bytes:
     _, drive = google_clients()
     response = drive.get(
         f"https://www.googleapis.com/drive/v3/files/{file_id}",
@@ -176,6 +165,11 @@ def download_file(file_id: str) -> bytes:
     )
     response.raise_for_status()
     return response.content
+
+
+@st.cache_data(show_spinner="Loading PDFs in this exit-ticket folder…")
+def download_batch(files: tuple[tuple[str, str, str], ...]) -> bytes:
+    return combine_pdfs([download_file(file_id, revision, size) for file_id, revision, size in files])
 
 
 @st.cache_data(ttl=60)
@@ -360,7 +354,8 @@ try:
     questions_df = load_sheet("exit_ticket_questions")
     exit_ticket_dates_df = load_sheet("exit_ticket_dates")
     scores_df = load_sheet("exit_ticket_scores")
-    scans = list_pdfs(INCOMING_FOLDER_ID)
+    _, drive = google_clients()
+    scans = list_batches(drive, INCOMING_FOLDER_ID)
     answer_keys = list_pdfs(ANSWER_KEY_FOLDER_ID)
 except Exception as exc:
     st.error("Google Drive or the grading spreadsheet could not be reached.")
@@ -371,14 +366,19 @@ if students_df.empty or not {"student", "period"}.issubset(students_df.columns):
     st.error("The students tab needs student and period columns.")
     st.stop()
 if not scans:
-    st.info("No PDF files were found in Incoming Scans.")
+    st.info("No PDFs were found in the exit-ticket folders in Incoming Scans.")
     st.stop()
 if not {"lesson", "exit_ticket_date"}.issubset(exit_ticket_dates_df.columns):
     st.error("The exit_ticket_dates tab needs lesson and exit_ticket_date columns.")
     st.stop()
 
 controls = st.columns(2)
-scan_name = controls[0].selectbox("Incoming scan", [item["name"] for item in scans])
+scan_choice = controls[0].selectbox(
+    "Exit ticket", range(len(scans)),
+    format_func=lambda index: scans[index]["name"],
+)
+scan = scans[scan_choice]
+scan_name = scan["name"]
 periods = sorted(students_df["period"].dropna().unique(), key=str)
 scope_options = ["All students", *[f"Period {period}" for period in periods]]
 roster_scope = controls[1].selectbox(
@@ -387,7 +387,6 @@ roster_scope = controls[1].selectbox(
     help="This controls who receives AE if missing. Name recognition always checks the complete roster.",
 )
 
-scan = next(item for item in scans if item["name"] == scan_name)
 exit_ticket_date = date_for_assignment(exit_ticket_dates_df, scan_name)
 if exit_ticket_date is None:
     st.error(
@@ -407,7 +406,13 @@ else:
         ].dropna().astype(str).unique()
     )
 questions = questions_for_assignment(questions_df, scan_name)
-scan_bytes = download_file(scan["id"])
+try:
+    scan_bytes = download_batch(scan["files"])
+except Exception as exc:
+    st.error("Could not read all PDFs in this exit-ticket folder. Nothing was saved.")
+    st.caption(str(exc))
+    st.stop()
+st.caption(f"{len(scan['files'])} PDF file(s) loaded as one continuous batch.")
 answer_key = next(
     (item for item in answer_keys if assignment_key(item["name"]) == assignment_key(scan_name)),
     None,
