@@ -28,8 +28,9 @@ reliable for the Drive API.
 OCR is provided by the Python dependencies in `requirements.txt`; no operating
 system package installation is required.
 
-The app only writes to the spreadsheet after **Save and finalize batch** is
-pressed. Until then, page assignments and grades stay in the Streamlit session.
+The app only writes scores to the spreadsheet when **Save** is pressed. Until
+then, page assignments and grades stay in the Streamlit session. Save before
+refreshing or closing the browser.
 
 ## Updating data after deployment
 
@@ -58,7 +59,25 @@ shows them as one continuous batch and keeps the existing student assignment,
 grading, answer-key, and saved-score behavior. Non-PDF files are ignored.
 Front and back tickets that have separate answer keys keep separate folders.
 
-Refresh the page after adding or replacing a PDF, then process the batch again.
-Previously saved grades are reloaded from the spreadsheet; save in-progress
-grades before refreshing. Loose PDFs in Incoming Scans remain supported for
-backward compatibility. No combined file is uploaded to Drive.
+Refresh the page after adding or replacing a PDF. The app reads names from
+every exit-ticket folder on its first visit, then caches OCR by individual PDF
+version. Adding one file does not make it re-read names from unchanged files
+while the app's cache is available. On a new Streamlit server instance, the
+first visit prepares the index again. Loose PDFs in Incoming Scans remain
+supported for backward compatibility. No combined file is uploaded to Drive.
+
+## Grading views
+
+- **By exit ticket** shows the familiar page-by-page review for one ticket.
+- **By student** follows one student's recognized pages across exit tickets.
+  Assign an unmatched Extra page in the exit-ticket view first; it will then
+  appear in that student's view for the current browser session.
+- **Unit summary** groups tickets by the number before the decimal point in
+  the lesson number. It lists students with at least one missing native
+  question grade and offers a queue of their scanned pages. Students with no
+  page are listed but cannot be opened until their work is uploaded.
+
+A score of zero counts as graded. AE, blank scores, and any student missing
+even one required question count as still to grade. Repeated questions mapped
+back to an earlier ticket are not required again for the newer ticket's unit
+completion total.

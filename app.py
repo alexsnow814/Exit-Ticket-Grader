@@ -9,6 +9,9 @@ from google.oauth2.service_account import Credentials
 from google.auth.transport.requests import AuthorizedSession
 import gspread
 from drive_batches import PDF_MIME, combine_pdfs, list_batches, list_children
+from grading_views import (
+    completion_lists, indexed_pages, lesson_sort_key, required_questions, unit_number,
+)
 
 from grader import (
     MANUAL_QUESTION,
@@ -17,6 +20,8 @@ from grader import (
     build_manual_score_rows,
     build_score_rows,
     date_for_assignment,
+    find_student,
+    grade_count,
     grades_for_assignment,
     identify_pages,
     mapped_score_keys,
@@ -158,6 +163,10 @@ def list_pdfs(folder_id: str):
 
 @st.cache_data(ttl=300, show_spinner=False)
 def download_file(file_id: str, revision: str = "", size: str = "") -> bytes:
+    return fetch_file(file_id)
+
+
+def fetch_file(file_id: str) -> bytes:
     _, drive = google_clients()
     response = drive.get(
         f"https://www.googleapis.com/drive/v3/files/{file_id}",
@@ -187,9 +196,26 @@ def load_sheet(name: str) -> pd.DataFrame:
     return pd.DataFrame(worksheet.get_all_records())
 
 
-@st.cache_data(show_spinner="Reading student names from the scanned pages…")
-def cached_identify(pdf_bytes: bytes, students: tuple[str, ...]):
-    return identify_pages(pdf_bytes, list(students))
+@st.cache_data(show_spinner=False)
+def identify_file(file_id: str, revision: str, size: str):
+    """Cache OCR per PDF version, independent of the changing class roster."""
+    return identify_pages(fetch_file(file_id), [])
+
+
+def indexed_batch_matches(scan: dict, students: tuple[str, ...]):
+    from grader import PageMatch
+
+    matches = []
+    offset = 0
+    for file_id, revision, size in scan["files"]:
+        file_matches = identify_file(file_id, revision, size)
+        for match in file_matches:
+            student, confidence = find_student(match.ocr_text, list(students))
+            matches.append(PageMatch(
+                offset + match.page_index, student, confidence, match.ocr_text,
+            ))
+        offset += len(file_matches)
+    return matches
 
 
 def save_rows(
@@ -284,38 +310,32 @@ def enable_mobile_grade_inputs():
     )
 
 
-def grade_count(
-    grades: dict[str, dict[str, float]],
-    student: str | None,
-    required_questions: list[str],
-) -> int:
-    """Count required grades in the supplied live or saved snapshot."""
-    if not student:
-        return 0
-    student_grades = grades.get(student, {})
-    return sum(question in student_grades for question in required_questions)
-
-
 def initialize_batch(
     scan,
     roster_scope,
-    scan_bytes,
     all_students,
     expected_students,
     questions,
     manual_grading,
     existing_scores,
 ):
-    matches = cached_identify(scan_bytes, tuple(all_students))
+    matches = indexed_batch_matches(scan, tuple(all_students))
     st.session_state.batch_key = (scan["id"], roster_scope)
     st.session_state.page_position = 0
     st.session_state.page_students = {
         match.page_index: match.student for match in matches
     }
+    overrides = st.session_state.get("page_assignment_overrides", {})
+    for page_index in st.session_state.page_students:
+        key = (scan["id"], page_index)
+        if key in overrides:
+            st.session_state.page_students[page_index] = overrides[key]
     st.session_state.page_confidence = {
         match.page_index: match.confidence for match in matches
     }
-    saved_grades = grades_for_assignment(existing_scores, scan["name"], questions)
+    saved_grades = grades_for_assignment(
+        existing_scores, scan["name"], None if manual_grading else questions
+    )
     st.session_state.grades = {
         student: dict(student_grades)
         for student, student_grades in saved_grades.items()
@@ -338,10 +358,38 @@ def initialize_batch(
         st.session_state.visible_page_indices = [
             match.page_index
             for match in matches
-            # An unmatched page may be a printed "Extra" copy.  It must stay
-            # visible so the teacher can assign it to a student in this period.
+            # Unmatched pages may be Extra copies assigned during grading.
             if match.student is None or match.student in expected_set
         ]
+
+
+BATCH_STATE_FIELDS = (
+    "page_position", "page_students", "page_confidence", "grades",
+    "saved_grades", "matches", "questions", "manual_grading",
+    "manual_possible_points", "expected_students", "visible_page_indices",
+)
+
+
+def activate_batch(scan, roster_scope, all_students, expected_students,
+                   questions, manual_grading, scores_df):
+    target = (scan["id"], roster_scope)
+    states = st.session_state.setdefault("batch_states", {})
+    previous = st.session_state.get("batch_key")
+    if previous and previous != target:
+        states[previous] = {
+            field: st.session_state.get(field) for field in BATCH_STATE_FIELDS
+        }
+    if previous == target:
+        return
+    if target in states:
+        for field, value in states[target].items():
+            st.session_state[field] = value
+        st.session_state.batch_key = target
+        return
+    initialize_batch(
+        scan, roster_scope, all_students, expected_students, questions,
+        manual_grading, scores_df,
+    )
 
 
 st.title("📝 Exit Ticket Grader")
@@ -372,29 +420,17 @@ if not {"lesson", "exit_ticket_date"}.issubset(exit_ticket_dates_df.columns):
     st.error("The exit_ticket_dates tab needs lesson and exit_ticket_date columns.")
     st.stop()
 
-controls = st.columns(2)
-scan_choice = controls[0].selectbox(
-    "Exit ticket", range(len(scans)),
-    format_func=lambda index: scans[index]["name"],
+view_mode = st.radio(
+    "View", ["By exit ticket", "By student", "Unit summary"],
+    horizontal=True,
 )
-scan = scans[scan_choice]
-scan_name = scan["name"]
 periods = sorted(students_df["period"].dropna().unique(), key=str)
 scope_options = ["All students", *[f"Period {period}" for period in periods]]
-roster_scope = controls[1].selectbox(
-    "Students expected in this scan",
+roster_scope = st.selectbox(
+    "Students to review",
     scope_options,
-    help="This controls who receives AE if missing. Name recognition always checks the complete roster.",
+    help="This controls whose work appears and who receives AE when a ticket is saved.",
 )
-
-exit_ticket_date = date_for_assignment(exit_ticket_dates_df, scan_name)
-if exit_ticket_date is None:
-    st.error(
-        f"No scheduled date was found for {scan_name}. Add its lesson number and "
-        "date to the exit_ticket_dates tab before saving grades."
-    )
-    st.stop()
-st.caption(f"Exit ticket date: {pd.Timestamp(exit_ticket_date):%B %-d, %Y}")
 all_students = sorted(students_df["student"].dropna().astype(str).unique())
 if roster_scope == "All students":
     expected_students = all_students
@@ -405,14 +441,138 @@ else:
             students_df["period"].astype(str) == selected_period, "student"
         ].dropna().astype(str).unique()
     )
-questions = questions_for_assignment(questions_df, scan_name)
+
+# The first visit reads each file's name area. Subsequent reruns and newly
+# uploaded PDFs reuse the independent cache entries for unchanged files.
+matches_by_scan = {}
 try:
-    scan_bytes = download_batch(scan["files"])
+    with st.spinner("Preparing student names across exit-ticket folders…"):
+        for item in scans:
+            matches_by_scan[item["id"]] = indexed_batch_matches(
+                item, tuple(all_students)
+            )
 except Exception as exc:
-    st.error("Could not read all PDFs in this exit-ticket folder. Nothing was saved.")
+    st.error("Could not prepare the scanned pages. Nothing was saved.")
     st.caption(str(exc))
     st.stop()
-st.caption(f"{len(scan['files'])} PDF file(s) loaded as one continuous batch.")
+
+all_pages = indexed_pages(scans, matches_by_scan)
+states = st.session_state.setdefault("batch_states", {})
+def page_student(scan_index, page_index, detected):
+    override_key = (scans[scan_index]["id"], page_index)
+    overrides = st.session_state.get("page_assignment_overrides", {})
+    if override_key in overrides:
+        return overrides[override_key]
+    if st.session_state.get("batch_key") == (scans[scan_index]["id"], roster_scope):
+        return st.session_state.page_students.get(page_index)
+    state = states.get((scans[scan_index]["id"], roster_scope))
+    if state:
+        return state["page_students"].get(page_index)
+    return detected
+
+scan_choice = None
+navigation_key = None
+navigation_pages = None
+if view_mode == "By exit ticket":
+    scan_choice = st.selectbox(
+        "Exit ticket", range(len(scans)),
+        format_func=lambda index: scans[index]["name"],
+    )
+elif view_mode == "By student":
+    student_choice = st.selectbox("Student", expected_students)
+    navigation_pages = [
+        (scan_index, page_index)
+        for scan_index, page_index, detected in all_pages
+        if page_student(scan_index, page_index, detected) == student_choice
+    ]
+    navigation_key = f"student_position_{roster_scope}_{student_choice}"
+    if not navigation_pages:
+        st.info("No scanned page is assigned to this student yet. An Extra page can be assigned in the exit-ticket view.")
+        st.stop()
+else:
+    configured_names = (
+        questions_df["exit_ticket"].dropna().astype(str).unique().tolist()
+        if "exit_ticket" in questions_df.columns else []
+    )
+    units = sorted(
+        {unit_number(name) for name in
+         [*(item["name"] for item in scans), *configured_names]
+         if unit_number(name)},
+        key=int,
+    )
+    if not units:
+        st.info("No numbered exit tickets were found.")
+        st.stop()
+    selected_unit = st.selectbox("Unit", units, format_func=lambda unit: f"Unit {unit}")
+    unit_indices = [
+        index for index, item in enumerate(scans)
+        if unit_number(item["name"]) == selected_unit
+    ]
+    scanned_keys = {assignment_key(scans[index]["name"]) for index in unit_indices}
+    summary_tickets = [(index, scans[index]["name"]) for index in unit_indices]
+    summary_tickets.extend(
+        (None, name) for name in configured_names
+        if unit_number(name) == selected_unit
+        and assignment_key(name) not in scanned_keys
+    )
+    summary_tickets.sort(key=lambda item: lesson_sort_key(item[1]))
+    st.subheader(f"Unit {selected_unit} grading summary")
+    missing_by_scan = {}
+    summary_rows = []
+    summary_missing = []
+    for index, ticket_name in summary_tickets:
+        ticket_questions = questions_for_assignment(questions_df, ticket_name)
+        has_answer_key = any(
+            assignment_key(key["name"]) == assignment_key(ticket_name)
+            for key in answer_keys
+        )
+        manual_ticket = ticket_questions.empty or (index is not None and not has_answer_key)
+        required = required_questions(
+            pd.DataFrame() if manual_ticket else ticket_questions,
+            native_only=True,
+        )
+        saved = grades_for_assignment(
+            scores_df, ticket_name, None if manual_ticket else ticket_questions
+        )
+        graded, missing = completion_lists(saved, expected_students, required)
+        summary_missing.append(missing)
+        if index is not None:
+            missing_by_scan[index] = set(missing)
+        summary_rows.append({
+            "Exit ticket": ticket_name,
+            "Graded students": len(graded),
+            "Still to grade": len(missing),
+            "Scans": "Available" if index is not None else "Not uploaded",
+        })
+    st.dataframe(pd.DataFrame(summary_rows), hide_index=True, use_container_width=True)
+    for row, missing in zip(summary_rows, summary_missing):
+        if missing:
+            with st.expander(f"{row['Exit ticket']}: {len(missing)} still to grade"):
+                st.write(", ".join(missing))
+    navigation_pages = [
+        (scan_index, page_index)
+        for scan_index, page_index, detected in all_pages
+        if scan_index in missing_by_scan
+        and (page_student(scan_index, page_index, detected) in missing_by_scan[scan_index]
+             or page_student(scan_index, page_index, detected) is None)
+    ]
+    navigation_key = f"unit_position_{roster_scope}_{selected_unit}"
+    st.caption("The review queue includes scanned pages with at least one missing grade, plus unmatched Extra pages. Students without a page appear in the lists above.")
+    if not navigation_pages:
+        st.success("There are no scanned pages with missing grades in this unit.")
+        st.stop()
+
+if navigation_pages is not None:
+    navigation_position = min(st.session_state.get(navigation_key, 0), len(navigation_pages) - 1)
+    scan_choice, navigation_page_index = navigation_pages[navigation_position]
+scan = scans[scan_choice]
+scan_name = scan["name"]
+questions = questions_for_assignment(questions_df, scan_name)
+exit_ticket_date = date_for_assignment(exit_ticket_dates_df, scan_name)
+if exit_ticket_date is None:
+    st.error(f"No scheduled date was found for {scan_name} in exit_ticket_dates.")
+    st.stop()
+st.caption(f"{scan_name} · {pd.Timestamp(exit_ticket_date):%B %-d, %Y} · {len(scan['files'])} PDF file(s)")
 answer_key = next(
     (item for item in answer_keys if assignment_key(item["name"]) == assignment_key(scan_name)),
     None,
@@ -429,23 +589,15 @@ if answer_key is None:
         "and this scan will use manual-total grading."
     )
 
-batch_key = (scan["id"], roster_scope)
-if st.button("Process this batch", type="primary"):
-    initialize_batch(
-        scan,
-        roster_scope,
-        scan_bytes,
-        all_students,
-        expected_students,
-        questions,
-        questions.empty or answer_key is None,
-        scores_df,
-    )
-
-if st.session_state.get("batch_key") != batch_key:
-    st.info(
-        "Choose the scan and expected-student group, then press **Process this batch**."
-    )
+activate_batch(
+    scan, roster_scope, all_students, expected_students, questions,
+    questions.empty or answer_key is None, scores_df,
+)
+try:
+    scan_bytes = download_batch(scan["files"])
+except Exception as exc:
+    st.error("Could not read this exit-ticket folder. Nothing was saved.")
+    st.caption(str(exc))
     st.stop()
 
 matches = st.session_state.matches
@@ -456,9 +608,14 @@ if not visible_page_indices:
         "pages matched to a different period."
     )
     st.stop()
-page_count = len(visible_page_indices)
-page_position = min(st.session_state.get("page_position", 0), page_count - 1)
-page_index = visible_page_indices[page_position]
+if navigation_pages is None:
+    page_count = len(visible_page_indices)
+    page_position = min(st.session_state.get("page_position", 0), page_count - 1)
+    page_index = visible_page_indices[page_position]
+else:
+    page_count = len(navigation_pages)
+    page_position = navigation_position
+    page_index = navigation_page_index
 assigned_students = {value for value in st.session_state.page_students.values() if value}
 expected_students = st.session_state.expected_students
 missing_students = [student for student in expected_students if student not in assigned_students]
@@ -476,7 +633,7 @@ duplicates = sorted(
 
 st.progress(
     (page_position + 1) / page_count,
-    text=f"{roster_scope}: page {page_position + 1} of {page_count}",
+    text=f"{view_mode}: page {page_position + 1} of {page_count}",
 )
 document_options = ["Student work"]
 if answer_key:
@@ -505,6 +662,9 @@ selected = st.selectbox(
 )
 selected_student = None if selected.startswith("—") else selected
 st.session_state.page_students[page_index] = selected_student
+st.session_state.setdefault("page_assignment_overrides", {})[
+    (scan["id"], page_index)
+] = selected_student
 if current_student is None:
     st.caption(
         "No student name was detected. If this is an Extra copy, choose the "
@@ -607,7 +767,7 @@ with st.container(key="grading_workspace"):
         else:
             st.info("Select a student before entering grades for this page.")
 
-required_questions = (
+required_ids = (
     [MANUAL_QUESTION]
     if st.session_state.manual_grading
     else [str(question["question"]) for question in st.session_state.questions]
@@ -615,24 +775,23 @@ required_questions = (
 
 
 def required_for_student(student: str | None) -> list[str]:
-    return required_questions
+    return required_ids
 
 
-assigned_unique_students = sorted(set(assigned_expected_students))
-graded_students = [
-    student
-    for student in assigned_unique_students
-    if grade_count(st.session_state.grades, student, required_for_student(student))
-    == len(required_for_student(student))
-]
-ungraded_students = [
-    student for student in assigned_unique_students if student not in graded_students
-]
+graded_students, ungraded_students = completion_lists(
+    st.session_state.grades, expected_students, required_ids,
+)
 
 enable_mobile_grade_inputs()
 
 if save_progress:
     try:
+        # A previously graded student can lack a page in a later upload. Do
+        # not replace their saved numeric work with AE merely for that reason.
+        absent_without_work = {
+            student for student in missing_students
+            if grade_count(st.session_state.grades, student, required_ids) == 0
+        }
         if st.session_state.manual_grading:
             score_rows = build_manual_score_rows(
                 expected_students,
@@ -640,7 +799,7 @@ if save_progress:
                 st.session_state.manual_possible_points,
                 st.session_state.grades,
                 exit_ticket_date,
-                set(missing_students),
+                absent_without_work,
             )
         else:
             batch_questions = pd.DataFrame(st.session_state.questions)
@@ -657,7 +816,7 @@ if save_progress:
                 batch_questions,
                 st.session_state.grades,
                 exit_ticket_date,
-                set(missing_students),
+                absent_without_work,
             )
             # Apply mapped ticket dates here instead of requiring the imported
             # grader module to accept a newly added keyword argument. Streamlit
@@ -708,10 +867,16 @@ else:
 # Navigation is applied only after the current page's widgets have copied their
 # values into the persistent grade dictionary above.
 if go_previous:
-    st.session_state.page_position = page_position - 1
+    if navigation_key is None:
+        st.session_state.page_position = page_position - 1
+    else:
+        st.session_state[navigation_key] = page_position - 1
     st.rerun()
 if go_next:
-    st.session_state.page_position = page_position + 1
+    if navigation_key is None:
+        st.session_state.page_position = page_position + 1
+    else:
+        st.session_state[navigation_key] = page_position + 1
     st.rerun()
 
 st.divider()
@@ -721,6 +886,9 @@ summary_a.metric("Pages in view", page_count)
 summary_b.metric("Graded students", len(graded_students))
 summary_c.metric("Still to grade", len(ungraded_students))
 summary_d.metric("Missing students", len(missing_students))
+if ungraded_students:
+    with st.expander(f"Still to grade: {len(ungraded_students)} students"):
+        st.write(", ".join(ungraded_students))
 if duplicates:
     st.error("Assigned to multiple pages: " + ", ".join(duplicates))
 if missing_students:
