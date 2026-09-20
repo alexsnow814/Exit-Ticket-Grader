@@ -67,10 +67,11 @@ browser session or restarting Streamlit reuses those rows instead of running
 OCR again. A new or replaced PDF has a new Drive file version, so only its
 pages need OCR. The tab's columns are `exit_ticket`, `pdf_name`, `file_id`,
 `modified_time`, `file_size`, `page_number`, `page_count`, and `header_text`.
-Do not change these column headings. If the tab has not yet been created, the
-grader continues using its prior in-memory index. Loose PDFs in Incoming
-Scans remain supported for backward compatibility. No combined file is
-uploaded to Drive.
+The grader creates this tab automatically with its existing spreadsheet
+credentials. Do not change these column headings. If the tab cannot be
+created or reached, the grader warns and continues using its prior in-memory
+index. Loose PDFs in Incoming Scans remain supported for backward
+compatibility. No combined file is uploaded to Drive.
 
 ## Grading views
 

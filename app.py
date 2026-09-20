@@ -217,21 +217,39 @@ def identify_file_chunk(file_id: str, revision: str, size: str,
     )
 
 
-@st.cache_data(ttl=10, show_spinner=False)
-def load_persistent_scan_index():
-    """One sheet read replaces replaying all OCR chunks in a new session."""
+def scan_index_worksheet():
+    """Create the app's index tab with its existing Sheets credentials."""
     sheets, _ = google_clients()
     try:
         worksheet = sheets.worksheet(INDEX_SHEET)
     except gspread.exceptions.WorksheetNotFound:
-        return None  # Keep the current grader usable until the tab is added.
-    return parse_index(worksheet.get_all_values())
+        try:
+            worksheet = sheets.add_worksheet(
+                title=INDEX_SHEET, rows=1000, cols=len(INDEX_HEADERS)
+            )
+        except gspread.exceptions.APIError:
+            # Another session may have created the tab at the same moment.
+            worksheet = sheets.worksheet(INDEX_SHEET)
+    header = worksheet.row_values(1)
+    if not header:
+        worksheet.update(
+            range_name="A1:H1", values=[INDEX_HEADERS], value_input_option="RAW"
+        )
+        worksheet.freeze(rows=1)
+    elif header[:len(INDEX_HEADERS)] != INDEX_HEADERS:
+        raise ValueError("scan_index has unexpected column headings")
+    return worksheet
+
+
+@st.cache_data(ttl=10, show_spinner=False)
+def load_persistent_scan_index():
+    """One sheet read replaces replaying all OCR chunks in a new session."""
+    return parse_index(scan_index_worksheet().get_all_values())
 
 
 def save_index_chunk(ticket_name, pdf_name, version, page_count, matches):
     """Persist every finished chunk, so even a disconnected phone can resume."""
-    sheets, _ = google_clients()
-    worksheet = sheets.worksheet(INDEX_SHEET)
+    worksheet = scan_index_worksheet()
     current = worksheet.get_all_values()
     if not current or current[0][:len(INDEX_HEADERS)] != INDEX_HEADERS:
         raise ValueError("scan_index has unexpected column headings")
@@ -269,7 +287,11 @@ def indexed_batch_matches(scan: dict, students: tuple[str, ...], file_index=None
 
 def prepare_scan_index(scans_to_prepare: list[dict], students: tuple[str, ...]):
     """Use the sheet index; backfill at most four missing pages per rerun."""
-    persistent = load_persistent_scan_index()
+    try:
+        persistent = load_persistent_scan_index()
+    except (gspread.exceptions.APIError, gspread.exceptions.WorksheetNotFound, ValueError) as exc:
+        st.warning(f"The scan index is unavailable; using temporary scan memory. Detail: {exc}")
+        persistent = None
     if persistent is not None:
         indexed = {}
         for scan_number, scan in enumerate(scans_to_prepare, start=1):
@@ -306,7 +328,7 @@ def prepare_scan_index(scans_to_prepare: list[dict], students: tuple[str, ...]):
         st.session_state.scan_name_index = indexed
         return indexed
 
-    # A missing tab leaves the deployed grader's existing behavior intact.
+    # A Sheets setup/access problem must not make existing grading unusable.
     indexed = st.session_state.setdefault("scan_name_index", {})
     file_index = st.session_state.setdefault("file_name_index", {})
     for scan_number, scan in enumerate(scans_to_prepare, start=1):
