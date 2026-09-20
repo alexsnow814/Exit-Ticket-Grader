@@ -10,7 +10,7 @@ from google.auth.transport.requests import AuthorizedSession
 import gspread
 from drive_batches import PDF_MIME, combine_pdfs, list_batches, list_children
 from grading_views import (
-    completion_status, indexed_pages, lesson_sort_key, required_questions, unit_number,
+    completion_lists, indexed_pages, lesson_sort_key, required_questions, unit_number,
 )
 
 from grader import (
@@ -52,6 +52,14 @@ VERIFIED_UNLABELED_PAGES = {
     ("1d85uAUFNbJ-eCvq7kqMjFiOzYFzJ8qtR", "2026-09-17T18:37:41.486Z", 20): "Eduardo Bento Pereira",
     ("1d85uAUFNbJ-eCvq7kqMjFiOzYFzJ8qtR", "2026-09-17T18:37:41.486Z", 22): "Livia Bento Pereira",
 }
+
+
+def completion_status(grades, students, required, uploaded_students):
+    """Count uploaded but ungraded pages separately from missing uploads."""
+    uploaded = sorted(set(students) & uploaded_students)
+    graded, still_to_grade = completion_lists(grades, uploaded, required)
+    missing = sorted(set(students) - uploaded_students)
+    return graded, still_to_grade, missing
 
 
 st.set_page_config(page_title="Exit Ticket Grader", page_icon="📝", layout="wide")
