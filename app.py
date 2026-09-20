@@ -220,6 +220,7 @@ def identify_file_chunk(file_id: str, revision: str, size: str,
 def scan_index_worksheet():
     """Create the app's index tab with its existing Sheets credentials."""
     sheets, _ = google_clients()
+    created = False
     try:
         worksheet = sheets.worksheet(INDEX_SHEET)
     except gspread.exceptions.WorksheetNotFound:
@@ -227,39 +228,31 @@ def scan_index_worksheet():
             worksheet = sheets.add_worksheet(
                 title=INDEX_SHEET, rows=1000, cols=len(INDEX_HEADERS)
             )
+            created = True
         except gspread.exceptions.APIError:
             # Another session may have created the tab at the same moment.
             worksheet = sheets.worksheet(INDEX_SHEET)
-    header = worksheet.row_values(1)
-    if not header:
+    if created:
         worksheet.update(
             range_name="A1:H1", values=[INDEX_HEADERS], value_input_option="RAW"
         )
         worksheet.freeze(rows=1)
-    elif header[:len(INDEX_HEADERS)] != INDEX_HEADERS:
-        raise ValueError("scan_index has unexpected column headings")
     return worksheet
 
 
-@st.cache_data(ttl=10, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def load_persistent_scan_index():
     """One sheet read replaces replaying all OCR chunks in a new session."""
     return parse_index(scan_index_worksheet().get_all_values())
 
 
 def save_index_chunk(ticket_name, pdf_name, version, page_count, matches):
-    """Persist every finished chunk, so even a disconnected phone can resume."""
+    """Write several OCR chunks in one Sheets request to stay under quota."""
     worksheet = scan_index_worksheet()
-    current = worksheet.get_all_values()
-    if not current or current[0][:len(INDEX_HEADERS)] != INDEX_HEADERS:
-        raise ValueError("scan_index has unexpected column headings")
-    existing = parse_index(current).get(version, {})
-    missing = [match for match in matches if match.page_index not in existing]
-    if missing:
-        worksheet.append_rows(
-            rows_for_pages(ticket_name, pdf_name, version, page_count, missing),
-            value_input_option="RAW",
-        )
+    worksheet.append_rows(
+        rows_for_pages(ticket_name, pdf_name, version, page_count, matches),
+        value_input_option="RAW",
+    )
     load_persistent_scan_index.clear()
 
 
@@ -294,13 +287,20 @@ def prepare_scan_index(scans_to_prepare: list[dict], students: tuple[str, ...]):
         persistent = None
     if persistent is not None:
         indexed = {}
+        pending = st.session_state.setdefault("unwritten_scan_pages", {})
         for scan_number, scan in enumerate(scans_to_prepare, start=1):
             for version, pdf_name in zip(scan["files"], scan["file_names"]):
                 if file_is_complete(persistent, version):
+                    pending.pop(version, None)
                     continue
                 file_id, revision, size = version
-                completed = indexed_prefix(persistent, version)
-                total_pages = completed[0].page_count if completed else file_page_count(
+                stored = indexed_prefix(persistent, version)
+                unwritten = [
+                    match for match in pending.get(version, [])
+                    if match.page_index >= len(stored)
+                ]
+                completed = [*stored, *unwritten]
+                total_pages = stored[0].page_count if stored else file_page_count(
                     file_id, revision, size
                 )
                 stop_page = min(total_pages, len(completed) + OCR_PAGES_PER_RUN)
@@ -314,9 +314,15 @@ def prepare_scan_index(scans_to_prepare: list[dict], students: tuple[str, ...]):
                     next_pages = identify_file_chunk(
                         file_id, revision, size, len(completed), stop_page
                     )
-                    save_index_chunk(
-                        scan["name"], pdf_name, version, total_pages, next_pages
-                    )
+                    pending[version] = [*unwritten, *next_pages]
+                    st.session_state.unwritten_scan_pages = pending
+                    if len(pending[version]) >= 16 or stop_page == total_pages:
+                        save_index_chunk(
+                            scan["name"], pdf_name, version, total_pages,
+                            pending[version],
+                        )
+                        pending.pop(version, None)
+                        st.session_state.unwritten_scan_pages = pending
                 st.rerun()
             file_index = {
                 version: indexed_prefix(persistent, version)

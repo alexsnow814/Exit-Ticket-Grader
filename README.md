@@ -61,8 +61,9 @@ Front and back tickets that have separate answer keys keep separate folders.
 
 Refresh the page after adding or replacing a PDF. The exit-ticket view reads
 names only from its selected folder. The student and unit views prepare their
-wider indexes in four-page chunks, with progress shown. Each completed chunk
-is written to the `scan_index` tab in the grading spreadsheet. Opening a new
+wider indexes in four-page chunks, with progress shown. Completed pages are
+written to the `scan_index` tab in groups of up to 16 to stay within Google
+Sheets' request limits. Opening a new
 browser session or restarting Streamlit reuses those rows instead of running
 OCR again. A new or replaced PDF has a new Drive file version, so only its
 pages need OCR. The tab's columns are `exit_ticket`, `pdf_name`, `file_id`,
