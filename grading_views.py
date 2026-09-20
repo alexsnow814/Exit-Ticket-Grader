@@ -45,6 +45,19 @@ def completion_lists(
     return graded, missing
 
 
+def completion_status(
+    grades: dict[str, dict[str, float]],
+    students: list[str],
+    required: list[str],
+    uploaded_students: set[str],
+) -> tuple[list[str], list[str], list[str]]:
+    """Separate uploaded work awaiting a grade from work with no assigned page."""
+    uploaded = sorted(set(students) & uploaded_students)
+    graded, still_to_grade = completion_lists(grades, uploaded, required)
+    missing = sorted(set(students) - uploaded_students)
+    return graded, still_to_grade, missing
+
+
 def indexed_pages(scans: list[dict], matches_by_scan: dict[str, list]) -> list[tuple[int, int, str | None]]:
     """Return scan/page/student entries in lesson and physical page order."""
     entries = []

@@ -140,6 +140,20 @@ def test_unentered_present_student_remains_blank():
     assert zero_rows[0][-1] == 0.0
 
 
+def test_missing_page_does_not_replace_grade_from_later_ticket():
+    questions = pd.DataFrame([{
+        "exit_ticket": "1.1 Exit Ticket", "question": "7b",
+        "standard": "S-ID.A.2", "possible_points": 5,
+    }])
+    rows = build_score_rows(
+        ["Student One", "Student Two"], questions,
+        {"Student One": {"7b": 0.0}}, "2026-08-28",
+        {"Student One", "Student Two"},
+    )
+    assert rows[0][-1] == 0.0
+    assert rows[1][-1] == "AE"
+
+
 def test_existing_numeric_scores_restore_but_blank_and_ae_do_not():
     scores = pd.DataFrame([
         {"student": "Student One", "exit_ticket": "1.1 Exit Ticket", "question": "1", "awarded_points": 0},

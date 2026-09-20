@@ -1,6 +1,6 @@
-"""Persistent, page-level OCR index for the grader's scan folders.
+"""Persistent, page-level OCR and teacher-assignment index for scan folders.
 
-The sheet stores header OCR, not grades or PDF content. File versions make an
+The sheet stores header OCR and corrected names, not grades or PDF content. File versions make an
 unchanged PDF reusable even when another PDF is added to the same folder.
 """
 
@@ -12,7 +12,7 @@ from dataclasses import dataclass
 INDEX_SHEET = "scan_index"
 INDEX_HEADERS = [
     "exit_ticket", "pdf_name", "file_id", "modified_time", "file_size",
-    "page_number", "page_count", "header_text",
+    "page_number", "page_count", "header_text", "assigned_student",
 ]
 
 
@@ -21,18 +21,21 @@ class IndexedPage:
     page_index: int
     page_count: int
     header_text: str
+    assigned_student: str = ""
 
 
 def parse_index(values: list[list[str]]) -> dict[tuple[str, str, str], dict[int, IndexedPage]]:
     """Read the index, tolerating duplicate/partial writes but not bad headers."""
     if not values:
         return {}
-    if values[0][:len(INDEX_HEADERS)] != INDEX_HEADERS:
+    if values[0][:8] != INDEX_HEADERS[:8] or (
+        len(values[0]) > 8 and values[0][8] != INDEX_HEADERS[8]
+    ):
         raise ValueError("scan_index has unexpected column headings")
     result: dict[tuple[str, str, str], dict[int, IndexedPage]] = {}
     for row in values[1:]:
         padded = [*row, *([""] * max(0, len(INDEX_HEADERS) - len(row)))]
-        _, _, file_id, modified_time, file_size, page_number, page_count, header_text = padded[:8]
+        _, _, file_id, modified_time, file_size, page_number, page_count, header_text, assigned = padded[:9]
         try:
             page_index = int(page_number) - 1
             count = int(page_count)
@@ -42,7 +45,7 @@ def parse_index(values: list[list[str]]) -> dict[tuple[str, str, str], dict[int,
             continue
         version = (file_id, modified_time, file_size)
         result.setdefault(version, {})[page_index] = IndexedPage(
-            page_index, count, header_text
+            page_index, count, header_text, assigned
         )
     return result
 
@@ -79,6 +82,6 @@ def rows_for_pages(
     file_id, modified_time, file_size = version
     return [
         [ticket_name, pdf_name, file_id, modified_time, file_size,
-         match.page_index + 1, page_count, match.ocr_text]
+         match.page_index + 1, page_count, match.ocr_text, ""]
         for match in matches
     ]

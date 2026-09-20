@@ -36,6 +36,17 @@ class ScanIndexTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_index([["wrong header"]])
 
+    def test_legacy_eight_column_index_and_saved_assignment(self):
+        version = ("file-id", "revision", "123")
+        row = rows_for_pages("1.11 Exit Ticket", "scan.pdf", version, 1, [
+            SimpleNamespace(page_index=0, ocr_text="Extra")
+        ])[0]
+        legacy = parse_index([INDEX_HEADERS[:8], row[:8]])
+        self.assertEqual(indexed_prefix(legacy, version)[0].assigned_student, "")
+        saved = parse_index([INDEX_HEADERS, [*row[:8], "Livia Bento Pereira"]])
+        self.assertEqual(indexed_prefix(saved, version)[0].assigned_student,
+                         "Livia Bento Pereira")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,7 @@ import pandas as pd
 
 from grading_views import (
     completion_lists,
+    completion_status,
     indexed_pages,
     lesson_sort_key,
     required_questions,
@@ -14,6 +15,16 @@ def test_partial_grade_and_zero_count_correctly():
     graded, missing = completion_lists(grades, ["A", "B", "C"], ["1", "2"])
     assert graded == ["A"]
     assert missing == ["B", "C"]
+
+
+def test_uploaded_ungraded_and_no_upload_are_distinct():
+    grades = {"A": {"1": 0.0}, "B": {"1": 2.0}}
+    graded, still, missing = completion_status(
+        grades, ["A", "B", "C"], ["1", "2"], {"A", "B"}
+    )
+    assert graded == []
+    assert still == ["A", "B"]
+    assert missing == ["C"]
 
 
 def test_unit_numbers_do_not_collapse_tenths():

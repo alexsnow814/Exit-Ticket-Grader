@@ -10,7 +10,7 @@ from google.auth.transport.requests import AuthorizedSession
 import gspread
 from drive_batches import PDF_MIME, combine_pdfs, list_batches, list_children
 from grading_views import (
-    completion_lists, indexed_pages, lesson_sort_key, required_questions, unit_number,
+    completion_status, indexed_pages, lesson_sort_key, required_questions, unit_number,
 )
 
 from grader import (
@@ -43,6 +43,15 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive.readonly",
 ]
+
+# Verified from the handwriting on otherwise unlabeled Extra pages. These
+# entries remain useful until a teacher saves their page assignments to the
+# persistent scan index; they do not infer identity from page position alone
+# when a different PDF version is uploaded.
+VERIFIED_UNLABELED_PAGES = {
+    ("1d85uAUFNbJ-eCvq7kqMjFiOzYFzJ8qtR", "2026-09-17T18:37:41.486Z", 20): "Eduardo Bento Pereira",
+    ("1d85uAUFNbJ-eCvq7kqMjFiOzYFzJ8qtR", "2026-09-17T18:37:41.486Z", 22): "Livia Bento Pereira",
+}
 
 
 st.set_page_config(page_title="Exit Ticket Grader", page_icon="📝", layout="wide")
@@ -235,9 +244,14 @@ def scan_index_worksheet():
             worksheet = sheets.worksheet(INDEX_SHEET)
     if created:
         worksheet.update(
-            range_name="A1:H1", values=[INDEX_HEADERS], value_input_option="RAW"
+            range_name="A1:I1", values=[INDEX_HEADERS], value_input_option="RAW"
         )
         worksheet.freeze(rows=1)
+    else:
+        if worksheet.col_count < len(INDEX_HEADERS):
+            worksheet.resize(cols=len(INDEX_HEADERS))
+        if worksheet.acell("I1").value != INDEX_HEADERS[8]:
+            worksheet.update(range_name="I1", values=[[INDEX_HEADERS[8]]], value_input_option="RAW")
     return worksheet
 
 
@@ -257,6 +271,33 @@ def save_index_chunk(ticket_name, pdf_name, version, page_count, matches):
     load_persistent_scan_index.clear()
 
 
+def save_page_assignments(scan: dict, page_students: dict[int, str | None]) -> None:
+    """Keep teacher corrections to Extra/name pages across app restarts."""
+    worksheet = scan_index_worksheet()
+    values = worksheet.get_all_values()
+    parsed = parse_index(values)
+    changes = []
+    offset = 0
+    for version in scan["files"]:
+        pages = indexed_prefix(parsed, version)
+        if not pages:
+            continue
+        for page in pages:
+            global_page = offset + page.page_index
+            assigned = page_students.get(global_page) or ""
+            if assigned == page.assigned_student:
+                continue
+            for row_number, row in enumerate(values[1:], start=2):
+                if (len(row) > 5 and tuple(row[2:5]) == version
+                        and row[5] == str(page.page_index + 1)):
+                    changes.append({"range": f"I{row_number}", "values": [[assigned]]})
+                    break
+        offset += len(pages)
+    if changes:
+        worksheet.batch_update(changes, value_input_option="RAW")
+        load_persistent_scan_index.clear()
+
+
 def indexed_batch_matches(scan: dict, students: tuple[str, ...], file_index=None):
     from grader import PageMatch
 
@@ -264,14 +305,26 @@ def indexed_batch_matches(scan: dict, students: tuple[str, ...], file_index=None
     offset = 0
     if file_index is None:
         file_index = st.session_state.get("file_name_index", {})
-    for file_id, revision, size in scan["files"]:
+    for (file_id, revision, size), pdf_name in zip(scan["files"], scan["file_names"]):
         version = (file_id, revision, size)
         file_matches = file_index[version]
         for match in file_matches:
             text = getattr(match, "header_text", None)
             if text is None:
                 text = match.ocr_text
-            student, confidence = find_student(text, list(students))
+            assigned = getattr(match, "assigned_student", "")
+            verified = VERIFIED_UNLABELED_PAGES.get(
+                (file_id, revision, match.page_index + 1), ""
+            )
+            if not verified and pdf_name.startswith("Wilson "):
+                verified = next(
+                    (name for name in students if name.startswith("Wilson ") and name.endswith("Chacon Garcia")), ""
+                )
+            student, confidence = (
+                (assigned, 100) if assigned in students
+                else (verified, 100) if verified in students
+                else find_student(text, list(students))
+            )
             matches.append(PageMatch(
                 offset + match.page_index, student, confidence, text,
             ))
@@ -672,6 +725,15 @@ else:
     st.subheader(f"Unit {selected_unit} grading summary")
     missing_by_scan = {}
     summary_rows = []
+    try:
+        matches_by_scan = prepare_scan_index(
+            [scans[index] for index in unit_indices], tuple(all_students)
+        )
+    except Exception as exc:
+        st.error("Could not prepare the student-work index.")
+        st.caption(str(exc))
+        st.stop()
+    summary_still = []
     summary_missing = []
     for index, ticket_name in summary_tickets:
         ticket_questions = questions_for_assignment(questions_df, ticket_name)
@@ -682,34 +744,37 @@ else:
         manual_ticket = ticket_questions.empty or (index is not None and not has_answer_key)
         required = required_questions(
             pd.DataFrame() if manual_ticket else ticket_questions,
-            native_only=True,
         )
         saved = grades_for_assignment(
             scores_df, ticket_name, None if manual_ticket else ticket_questions
         )
-        graded, missing = completion_lists(saved, expected_students, required)
+        uploaded = (
+            {page_student(index, match.page_index, match.student)
+             for match in matches_by_scan.get(scans[index]["id"], [])}
+            if index is not None else set()
+        )
+        graded, still, missing = completion_status(
+            saved, expected_students, required, uploaded
+        )
+        summary_still.append(still)
         summary_missing.append(missing)
         if index is not None:
-            missing_by_scan[index] = set(missing)
+            missing_by_scan[index] = set(still)
         summary_rows.append({
             "Exit ticket": ticket_name,
             "Graded students": len(graded),
-            "Still to grade": len(missing),
+            "Still to grade": len(still),
+            "Missing (no upload)": len(missing),
             "Scans": "Available" if index is not None else "Not uploaded",
         })
     st.dataframe(pd.DataFrame(summary_rows), hide_index=True, use_container_width=True)
-    for row, missing in zip(summary_rows, summary_missing):
+    for row, still, missing in zip(summary_rows, summary_still, summary_missing):
+        if still:
+            with st.expander(f"{row['Exit ticket']}: {len(still)} still to grade"):
+                st.write(", ".join(still))
         if missing:
-            with st.expander(f"{row['Exit ticket']}: {len(missing)} still to grade"):
+            with st.expander(f"{row['Exit ticket']}: {len(missing)} missing uploads"):
                 st.write(", ".join(missing))
-    try:
-        matches_by_scan = prepare_scan_index(
-            [scans[index] for index in unit_indices], tuple(all_students)
-        )
-    except Exception as exc:
-        st.error("Could not prepare the missing-work queue. The summary above is still available.")
-        st.caption(str(exc))
-        st.stop()
     all_pages = indexed_pages(scans, matches_by_scan)
     navigation_pages = [
         (scan_index, page_index)
@@ -940,8 +1005,9 @@ def required_for_student(student: str | None) -> list[str]:
     return required_ids
 
 
-graded_students, ungraded_students = completion_lists(
+graded_students, ungraded_students, missing_students = completion_status(
     st.session_state.grades, expected_students, required_ids,
+    assigned_students,
 )
 
 enable_mobile_grade_inputs()
@@ -950,10 +1016,7 @@ if save_progress:
     try:
         # A previously graded student can lack a page in a later upload. Do
         # not replace their saved numeric work with AE merely for that reason.
-        absent_without_work = {
-            student for student in missing_students
-            if grade_count(st.session_state.grades, student, required_ids) == 0
-        }
+        absent_without_work = set(missing_students)
         if st.session_state.manual_grading:
             score_rows = build_manual_score_rows(
                 expected_students,
@@ -999,6 +1062,10 @@ if save_progress:
         st.error("Scores could not be saved. Your page assignments and grades remain on screen.")
         st.caption(f"Connection detail: {exc}")
     else:
+        try:
+            save_page_assignments(scan, st.session_state.page_students)
+        except Exception as exc:
+            st.warning(f"Grades saved, but corrected page names could not be remembered: {exc}")
         st.session_state.saved_grades = {
             student: dict(student_grades)
             for student, student_grades in st.session_state.grades.items()

@@ -320,11 +320,11 @@ def build_score_rows(
                 # score. Only an explicitly loaded or entered numeric grade may
                 # update a mapped historical question.
                 continue
-            awarded = student_grades.get(question_id, "") if mapped else (
-                "AE"
-                if student in absent_students
-                else student_grades.get(question_id, "")
-            )
+            # A score entered on a later ticket takes precedence over a
+            # missing page here. Missing native questions alone receive AE.
+            awarded = student_grades.get(question_id, "")
+            if not mapped and student in absent_students and awarded == "":
+                awarded = "AE"
             rows.append(
                 [
                     student,
@@ -434,13 +434,9 @@ def build_manual_score_rows(
             exit_ticket_date,
             MANUAL_QUESTION,
             float(possible_points),
-            "AE"
-            if student in absent_students
-            else (
-                float(grades[student][MANUAL_QUESTION])
-                if MANUAL_QUESTION in grades.get(student, {})
-                else ""
-            ),
+            (float(grades[student][MANUAL_QUESTION])
+             if MANUAL_QUESTION in grades.get(student, {})
+             else "AE" if student in absent_students else ""),
         ]
         for student in students
     ]

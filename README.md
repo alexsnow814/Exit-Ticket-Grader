@@ -67,7 +67,9 @@ Sheets' request limits. Opening a new
 browser session or restarting Streamlit reuses those rows instead of running
 OCR again. A new or replaced PDF has a new Drive file version, so only its
 pages need OCR. The tab's columns are `exit_ticket`, `pdf_name`, `file_id`,
-`modified_time`, `file_size`, `page_number`, `page_count`, and `header_text`.
+`modified_time`, `file_size`, `page_number`, `page_count`, `header_text`, and
+`assigned_student`. The final column remembers a teacher's correction when a
+handwritten name or Extra page is assigned to a student.
 The grader creates this tab automatically with its existing spreadsheet
 credentials. Do not change these column headings. If the tab cannot be
 created or reached, the grader warns and continues using its prior in-memory
