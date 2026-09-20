@@ -210,10 +210,11 @@ def file_page_count(file_id: str, revision: str, size: str) -> int:
 
 @st.cache_data(show_spinner=False)
 def identify_file_chunk(file_id: str, revision: str, size: str,
-                        start_page: int, stop_page: int):
+                        start_page: int, stop_page: int,
+                        students: tuple[str, ...]):
     """OCR a small page range so a large PDF cannot monopolize one run."""
     return identify_pages(
-        download_file(file_id, revision, size), [], start_page, stop_page
+        download_file(file_id, revision, size), list(students), start_page, stop_page
     )
 
 
@@ -312,7 +313,8 @@ def prepare_scan_index(scans_to_prepare: list[dict], students: tuple[str, ...]):
                 )
                 with st.spinner("Reading student names from these pages…"):
                     next_pages = identify_file_chunk(
-                        file_id, revision, size, len(completed), stop_page
+                        file_id, revision, size, len(completed), stop_page,
+                        students,
                     )
                     pending[version] = [*unwritten, *next_pages]
                     st.session_state.unwritten_scan_pages = pending
@@ -354,7 +356,8 @@ def prepare_scan_index(scans_to_prepare: list[dict], students: tuple[str, ...]):
                 )
                 with st.spinner("Reading student names from these pages…"):
                     next_pages = identify_file_chunk(
-                        file_id, revision, size, len(completed), stop_page
+                        file_id, revision, size, len(completed), stop_page,
+                        students,
                     )
                     file_index[version] = [*completed, *next_pages]
                     st.session_state.file_name_index = file_index
