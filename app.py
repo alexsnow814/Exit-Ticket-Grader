@@ -49,6 +49,10 @@ SCOPES = [
 # persistent scan index; they do not infer identity from page position alone
 # when a different PDF version is uploaded.
 VERIFIED_UNLABELED_PAGES = {
+    ("16AsBwKMjMBiBzXoPRH1miCLuwxD7LwXQ", "2026-09-13T22:59:22.562Z", 16): "Ivanna Santos",
+    ("16AsBwKMjMBiBzXoPRH1miCLuwxD7LwXQ", "2026-09-13T22:59:22.562Z", 38): "Melany Munera",
+    ("10LA1xMIKMKB0-poEB_Zk2wQj5FhIBxnM", "2026-09-13T22:59:27.099Z", 32): "Ivanna Santos",
+    ("1Po7f8BWMcxBLYvDgbHBofuzGRCzr01G7", "2026-09-13T22:59:33.938Z", 4): "Ivanna Santos",
     ("1d85uAUFNbJ-eCvq7kqMjFiOzYFzJ8qtR", "2026-09-17T18:37:41.486Z", 20): "Eduardo Bento Pereira",
     ("1d85uAUFNbJ-eCvq7kqMjFiOzYFzJ8qtR", "2026-09-17T18:37:41.486Z", 22): "Livia Bento Pereira",
 }
