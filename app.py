@@ -30,6 +30,10 @@ from grader import (
     questions_for_assignment,
     render_page,
 )
+from scan_index import (
+    INDEX_HEADERS, INDEX_SHEET, file_is_complete, indexed_prefix,
+    parse_index, rows_for_pages,
+)
 
 
 SPREADSHEET_ID = "1w6iWAYavC3UWK8iuazZFm_KkYla-qAbhOWe7nPfMzSo"
@@ -213,26 +217,96 @@ def identify_file_chunk(file_id: str, revision: str, size: str,
     )
 
 
-def indexed_batch_matches(scan: dict, students: tuple[str, ...]):
+@st.cache_data(ttl=10, show_spinner=False)
+def load_persistent_scan_index():
+    """One sheet read replaces replaying all OCR chunks in a new session."""
+    sheets, _ = google_clients()
+    try:
+        worksheet = sheets.worksheet(INDEX_SHEET)
+    except gspread.exceptions.WorksheetNotFound:
+        return None  # Keep the current grader usable until the tab is added.
+    return parse_index(worksheet.get_all_values())
+
+
+def save_index_chunk(ticket_name, pdf_name, version, page_count, matches):
+    """Persist every finished chunk, so even a disconnected phone can resume."""
+    sheets, _ = google_clients()
+    worksheet = sheets.worksheet(INDEX_SHEET)
+    current = worksheet.get_all_values()
+    if not current or current[0][:len(INDEX_HEADERS)] != INDEX_HEADERS:
+        raise ValueError("scan_index has unexpected column headings")
+    existing = parse_index(current).get(version, {})
+    missing = [match for match in matches if match.page_index not in existing]
+    if missing:
+        worksheet.append_rows(
+            rows_for_pages(ticket_name, pdf_name, version, page_count, missing),
+            value_input_option="RAW",
+        )
+    load_persistent_scan_index.clear()
+
+
+def indexed_batch_matches(scan: dict, students: tuple[str, ...], file_index=None):
     from grader import PageMatch
 
     matches = []
     offset = 0
-    file_index = st.session_state.get("file_name_index", {})
+    if file_index is None:
+        file_index = st.session_state.get("file_name_index", {})
     for file_id, revision, size in scan["files"]:
         version = (file_id, revision, size)
         file_matches = file_index[version]
         for match in file_matches:
-            student, confidence = find_student(match.ocr_text, list(students))
+            text = getattr(match, "header_text", None)
+            if text is None:
+                text = match.ocr_text
+            student, confidence = find_student(text, list(students))
             matches.append(PageMatch(
-                offset + match.page_index, student, confidence, match.ocr_text,
+                offset + match.page_index, student, confidence, text,
             ))
         offset += len(file_matches)
     return matches
 
 
 def prepare_scan_index(scans_to_prepare: list[dict], students: tuple[str, ...]):
-    """Prepare at most four pages per rerun, saving progress in the session."""
+    """Use the sheet index; backfill at most four missing pages per rerun."""
+    persistent = load_persistent_scan_index()
+    if persistent is not None:
+        indexed = {}
+        for scan_number, scan in enumerate(scans_to_prepare, start=1):
+            for version, pdf_name in zip(scan["files"], scan["file_names"]):
+                if file_is_complete(persistent, version):
+                    continue
+                file_id, revision, size = version
+                completed = indexed_prefix(persistent, version)
+                total_pages = completed[0].page_count if completed else file_page_count(
+                    file_id, revision, size
+                )
+                stop_page = min(total_pages, len(completed) + OCR_PAGES_PER_RUN)
+                st.progress(
+                    len(completed) / total_pages,
+                    text=(f"Reading {scan['name']}: pages {len(completed) + 1}–"
+                          f"{stop_page} of {total_pages} "
+                          f"(folder {scan_number} of {len(scans_to_prepare)})"),
+                )
+                with st.spinner("Reading student names from these pages…"):
+                    next_pages = identify_file_chunk(
+                        file_id, revision, size, len(completed), stop_page
+                    )
+                    save_index_chunk(
+                        scan["name"], pdf_name, version, total_pages, next_pages
+                    )
+                st.rerun()
+            file_index = {
+                version: indexed_prefix(persistent, version)
+                for version in scan["files"]
+            }
+            indexed[scan["id"]] = indexed_batch_matches(
+                scan, students, file_index
+            )
+        st.session_state.scan_name_index = indexed
+        return indexed
+
+    # A missing tab leaves the deployed grader's existing behavior intact.
     indexed = st.session_state.setdefault("scan_name_index", {})
     file_index = st.session_state.setdefault("file_name_index", {})
     for scan_number, scan in enumerate(scans_to_prepare, start=1):

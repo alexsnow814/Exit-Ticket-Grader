@@ -61,11 +61,16 @@ Front and back tickets that have separate answer keys keep separate folders.
 
 Refresh the page after adding or replacing a PDF. The exit-ticket view reads
 names only from its selected folder. The student and unit views prepare their
-wider indexes in four-page chunks, with progress shown. Completed chunks are
-kept for the current app session, so switching views does not re-read them.
-A new Streamlit server instance prepares names again as needed. Loose PDFs in
-Incoming Scans remain supported for backward compatibility. No combined file
-is uploaded to Drive.
+wider indexes in four-page chunks, with progress shown. Each completed chunk
+is written to the `scan_index` tab in the grading spreadsheet. Opening a new
+browser session or restarting Streamlit reuses those rows instead of running
+OCR again. A new or replaced PDF has a new Drive file version, so only its
+pages need OCR. The tab's columns are `exit_ticket`, `pdf_name`, `file_id`,
+`modified_time`, `file_size`, `page_number`, `page_count`, and `header_text`.
+Do not change these column headings. If the tab has not yet been created, the
+grader continues using its prior in-memory index. Loose PDFs in Incoming
+Scans remain supported for backward compatibility. No combined file is
+uploaded to Drive.
 
 ## Grading views
 

@@ -44,8 +44,12 @@ def file_versions(files: list[dict]) -> tuple[tuple[str, str, str], ...]:
 
 def batch_record(item: dict, files: list[dict]) -> dict:
     versions = file_versions(files)
+    ordered = sorted(files, key=lambda f: (f['name'].casefold(), f['id']))
     revision = hashlib.sha256(json.dumps(versions).encode()).hexdigest()[:20]
-    return {**item, 'id': f"{item['id']}:{revision}", 'files': versions}
+    return {
+        **item, 'id': f"{item['id']}:{revision}", 'files': versions,
+        'file_names': tuple(f['name'] for f in ordered),
+    }
 
 
 def list_batches(drive, folder_id: str) -> list[dict]:
