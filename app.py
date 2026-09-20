@@ -218,6 +218,25 @@ def indexed_batch_matches(scan: dict, students: tuple[str, ...]):
     return matches
 
 
+def prepare_scan_index(scans_to_prepare: list[dict], students: tuple[str, ...]):
+    """Prepare at most one folder per rerun to bound OCR startup work."""
+    indexed = st.session_state.setdefault("scan_name_index", {})
+    pending = [scan for scan in scans_to_prepare if scan["id"] not in indexed]
+    if pending:
+        current = pending[0]
+        done = len(scans_to_prepare) - len(pending)
+        st.progress(
+            done / len(scans_to_prepare),
+            text=f"Reading names: {current['name']} ({done + 1} of {len(scans_to_prepare)} folders)",
+        )
+        with st.spinner(f"Reading names in {current['name']}…"):
+            indexed[current["id"]] = indexed_batch_matches(current, students)
+            st.session_state.scan_name_index = indexed
+        if len(pending) > 1:
+            st.rerun()
+    return {scan["id"]: indexed[scan["id"]] for scan in scans_to_prepare}
+
+
 def save_rows(
     rows: list[list[object]],
     update_existing_only: set[tuple[str, str, str]] | None = None,
@@ -319,7 +338,9 @@ def initialize_batch(
     manual_grading,
     existing_scores,
 ):
-    matches = indexed_batch_matches(scan, tuple(all_students))
+    matches = st.session_state.get("scan_name_index", {}).get(scan["id"])
+    if matches is None:
+        matches = indexed_batch_matches(scan, tuple(all_students))
     st.session_state.batch_key = (scan["id"], roster_scope)
     st.session_state.page_position = 0
     st.session_state.page_students = {
@@ -442,21 +463,10 @@ else:
         ].dropna().astype(str).unique()
     )
 
-# The first visit reads each file's name area. Subsequent reruns and newly
-# uploaded PDFs reuse the independent cache entries for unchanged files.
+# Ticket view prepares only the selected folder. Student and unit views build
+# their wider index one folder per rerun, avoiding a long, resource-heavy run.
 matches_by_scan = {}
-try:
-    with st.spinner("Preparing student names across exit-ticket folders…"):
-        for item in scans:
-            matches_by_scan[item["id"]] = indexed_batch_matches(
-                item, tuple(all_students)
-            )
-except Exception as exc:
-    st.error("Could not prepare the scanned pages. Nothing was saved.")
-    st.caption(str(exc))
-    st.stop()
-
-all_pages = indexed_pages(scans, matches_by_scan)
+all_pages = []
 states = st.session_state.setdefault("batch_states", {})
 def page_student(scan_index, page_index, detected):
     override_key = (scans[scan_index]["id"], page_index)
@@ -478,8 +488,21 @@ if view_mode == "By exit ticket":
         "Exit ticket", range(len(scans)),
         format_func=lambda index: scans[index]["name"],
     )
+    try:
+        matches_by_scan = prepare_scan_index([scans[scan_choice]], tuple(all_students))
+    except Exception as exc:
+        st.error("Could not read names in this exit-ticket folder. Nothing was saved.")
+        st.caption(str(exc))
+        st.stop()
 elif view_mode == "By student":
     student_choice = st.selectbox("Student", expected_students)
+    try:
+        matches_by_scan = prepare_scan_index(scans, tuple(all_students))
+    except Exception as exc:
+        st.error("Could not prepare the student-work index. Nothing was saved.")
+        st.caption(str(exc))
+        st.stop()
+    all_pages = indexed_pages(scans, matches_by_scan)
     navigation_pages = [
         (scan_index, page_index)
         for scan_index, page_index, detected in all_pages
@@ -549,6 +572,15 @@ else:
         if missing:
             with st.expander(f"{row['Exit ticket']}: {len(missing)} still to grade"):
                 st.write(", ".join(missing))
+    try:
+        matches_by_scan = prepare_scan_index(
+            [scans[index] for index in unit_indices], tuple(all_students)
+        )
+    except Exception as exc:
+        st.error("Could not prepare the missing-work queue. The summary above is still available.")
+        st.caption(str(exc))
+        st.stop()
+    all_pages = indexed_pages(scans, matches_by_scan)
     navigation_pages = [
         (scan_index, page_index)
         for scan_index, page_index, detected in all_pages
