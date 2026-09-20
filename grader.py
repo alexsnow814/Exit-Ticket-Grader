@@ -24,6 +24,9 @@ SCORE_COLUMNS = [
 MANUAL_QUESTION = "Manual total"
 MANUAL_STANDARD = "Manual grading"
 _OCR_LOCK = Lock()
+_NAME_CROP_FRACTION = 0.11
+_RETRY_CROP_FRACTION = 0.20
+_RETRY_BELOW_CONFIDENCE = 90
 
 
 @dataclass(frozen=True)
@@ -96,12 +99,12 @@ def _ocr_engine():
     })
 
 
-def _extract_header_text(page) -> str:
-    """Recognize names without rasterizing the question/work portion of a scan."""
+def _extract_header_text(page, fraction: float = _NAME_CROP_FRACTION) -> str:
+    """Recognize the printed name area, leaving the question/work area unread."""
     import fitz
 
     header = fitz.Rect(page.rect)
-    header.y1 = header.y0 + header.height * 0.20
+    header.y1 = header.y0 + header.height * fraction
     embedded = page.get_text("text", clip=header).strip()
     if embedded:
         return embedded
@@ -188,8 +191,16 @@ def identify_pages(
     try:
         last_page = document.page_count if stop_page is None else min(stop_page, document.page_count)
         for page_index in range(start_page, last_page):
-            text = _extract_header_text(document.load_page(page_index))
+            page = document.load_page(page_index)
+            text = _extract_header_text(page)
             student, confidence = find_student(text, students)
+            # A faint or unusually placed name can need more context. Only
+            # retry uncertain pages; known "Extra" copies stay unassigned.
+            if students and confidence < _RETRY_BELOW_CONFIDENCE:
+                wider_text = _extract_header_text(page, _RETRY_CROP_FRACTION)
+                wider_student, wider_confidence = find_student(wider_text, students)
+                if wider_student and wider_confidence > confidence:
+                    text, student, confidence = wider_text, wider_student, wider_confidence
             matches.append(PageMatch(page_index, student, confidence, text))
     finally:
         document.close()
