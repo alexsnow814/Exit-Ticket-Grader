@@ -61,12 +61,11 @@ Front and back tickets that have separate answer keys keep separate folders.
 
 Refresh the page after adding or replacing a PDF. The exit-ticket view reads
 names only from its selected folder. The student and unit views prepare their
-wider indexes one folder at a time, with progress shown. OCR is cached by
-individual PDF version: adding one file does not make the app re-read names
-from unchanged files while the app's cache is available. A new Streamlit
-server instance prepares names again as needed. Loose PDFs in Incoming Scans
-remain supported for backward compatibility. No combined file is uploaded to
-Drive.
+wider indexes in four-page chunks, with progress shown. Completed chunks are
+kept for the current app session, so switching views does not re-read them.
+A new Streamlit server instance prepares names again as needed. Loose PDFs in
+Incoming Scans remain supported for backward compatibility. No combined file
+is uploaded to Drive.
 
 ## Grading views
 

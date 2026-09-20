@@ -161,7 +161,7 @@ def list_pdfs(folder_id: str):
     return [item for item in list_children(drive, folder_id) if item['mimeType'] == PDF_MIME]
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=300, max_entries=2, show_spinner=False)
 def download_file(file_id: str, revision: str = "", size: str = "") -> bytes:
     return fetch_file(file_id)
 
@@ -176,7 +176,7 @@ def fetch_file(file_id: str) -> bytes:
     return response.content
 
 
-@st.cache_data(show_spinner="Loading PDFs in this exit-ticket folder…")
+@st.cache_data(max_entries=2, show_spinner="Loading PDFs in this exit-ticket folder…")
 def download_batch(files: tuple[tuple[str, str, str], ...]) -> bytes:
     return combine_pdfs([download_file(file_id, revision, size) for file_id, revision, size in files])
 
@@ -196,10 +196,21 @@ def load_sheet(name: str) -> pd.DataFrame:
     return pd.DataFrame(worksheet.get_all_records())
 
 
+OCR_PAGES_PER_RUN = 4
+
+
 @st.cache_data(show_spinner=False)
-def identify_file(file_id: str, revision: str, size: str):
-    """Cache OCR per PDF version, independent of the changing class roster."""
-    return identify_pages(fetch_file(file_id), [])
+def file_page_count(file_id: str, revision: str, size: str) -> int:
+    return pdf_page_count(download_file(file_id, revision, size))
+
+
+@st.cache_data(show_spinner=False)
+def identify_file_chunk(file_id: str, revision: str, size: str,
+                        start_page: int, stop_page: int):
+    """OCR a small page range so a large PDF cannot monopolize one run."""
+    return identify_pages(
+        download_file(file_id, revision, size), [], start_page, stop_page
+    )
 
 
 def indexed_batch_matches(scan: dict, students: tuple[str, ...]):
@@ -207,8 +218,10 @@ def indexed_batch_matches(scan: dict, students: tuple[str, ...]):
 
     matches = []
     offset = 0
+    file_index = st.session_state.get("file_name_index", {})
     for file_id, revision, size in scan["files"]:
-        file_matches = identify_file(file_id, revision, size)
+        version = (file_id, revision, size)
+        file_matches = file_index[version]
         for match in file_matches:
             student, confidence = find_student(match.ocr_text, list(students))
             matches.append(PageMatch(
@@ -219,20 +232,34 @@ def indexed_batch_matches(scan: dict, students: tuple[str, ...]):
 
 
 def prepare_scan_index(scans_to_prepare: list[dict], students: tuple[str, ...]):
-    """Prepare at most one folder per rerun to bound OCR startup work."""
+    """Prepare at most four pages per rerun, saving progress in the session."""
     indexed = st.session_state.setdefault("scan_name_index", {})
-    pending = [scan for scan in scans_to_prepare if scan["id"] not in indexed]
-    if pending:
-        current = pending[0]
-        done = len(scans_to_prepare) - len(pending)
-        st.progress(
-            done / len(scans_to_prepare),
-            text=f"Reading names: {current['name']} ({done + 1} of {len(scans_to_prepare)} folders)",
-        )
-        with st.spinner(f"Reading names in {current['name']}…"):
-            indexed[current["id"]] = indexed_batch_matches(current, students)
-            st.session_state.scan_name_index = indexed
-        if len(pending) > 1:
+    file_index = st.session_state.setdefault("file_name_index", {})
+    for scan_number, scan in enumerate(scans_to_prepare, start=1):
+        if scan["id"] in indexed:
+            continue
+        for version in scan["files"]:
+            file_id, revision, size = version
+            total_pages = file_page_count(file_id, revision, size)
+            completed = file_index.get(version, [])
+            if len(completed) < total_pages:
+                stop_page = min(total_pages, len(completed) + OCR_PAGES_PER_RUN)
+                st.progress(
+                    len(completed) / total_pages,
+                    text=(f"Reading {scan['name']}: pages {len(completed) + 1}–"
+                          f"{stop_page} of {total_pages} "
+                          f"(folder {scan_number} of {len(scans_to_prepare)})"),
+                )
+                with st.spinner("Reading student names from these pages…"):
+                    next_pages = identify_file_chunk(
+                        file_id, revision, size, len(completed), stop_page
+                    )
+                    file_index[version] = [*completed, *next_pages]
+                    st.session_state.file_name_index = file_index
+                st.rerun()
+        indexed[scan["id"]] = indexed_batch_matches(scan, students)
+        st.session_state.scan_name_index = indexed
+        if scan_number < len(scans_to_prepare):
             st.rerun()
     return {scan["id"]: indexed[scan["id"]] for scan in scans_to_prepare}
 
@@ -338,9 +365,7 @@ def initialize_batch(
     manual_grading,
     existing_scores,
 ):
-    matches = st.session_state.get("scan_name_index", {}).get(scan["id"])
-    if matches is None:
-        matches = indexed_batch_matches(scan, tuple(all_students))
+    matches = st.session_state["scan_name_index"][scan["id"]]
     st.session_state.batch_key = (scan["id"], roster_scope)
     st.session_state.page_position = 0
     st.session_state.page_students = {
@@ -464,7 +489,7 @@ else:
     )
 
 # Ticket view prepares only the selected folder. Student and unit views build
-# their wider index one folder per rerun, avoiding a long, resource-heavy run.
+# their wider index in small page chunks, avoiding a long, resource-heavy run.
 matches_by_scan = {}
 all_pages = []
 states = st.session_state.setdefault("batch_states", {})

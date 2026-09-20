@@ -175,13 +175,19 @@ def find_student(text: str, students: list[str], minimum_score: int = 72):
     return best_student, best_score
 
 
-def identify_pages(pdf_bytes: bytes, students: list[str]) -> list[PageMatch]:
+def identify_pages(
+    pdf_bytes: bytes,
+    students: list[str],
+    start_page: int = 0,
+    stop_page: int | None = None,
+) -> list[PageMatch]:
     import fitz
 
     document = fitz.open(stream=pdf_bytes, filetype="pdf")
     matches = []
     try:
-        for page_index in range(document.page_count):
+        last_page = document.page_count if stop_page is None else min(stop_page, document.page_count)
+        for page_index in range(start_page, last_page):
             text = _extract_header_text(document.load_page(page_index))
             student, confidence = find_student(text, students)
             matches.append(PageMatch(page_index, student, confidence, text))
