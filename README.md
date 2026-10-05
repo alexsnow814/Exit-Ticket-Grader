@@ -28,9 +28,11 @@ reliable for the Drive API.
 OCR is provided by the Python dependencies in `requirements.txt`; no operating
 system package installation is required.
 
-The app only writes scores to the spreadsheet when **Save** is pressed. Until
-then, page assignments and grades stay in the Streamlit session. Save before
-refreshing or closing the browser.
+Grade fields do not trigger a page reload or spreadsheet write. **Previous**
+and **Next** save the current student's grades before changing pages; **Save**
+commits them without navigating. An unmatched Extra page must be assigned with
+**Save** before its grade fields appear. Unsaved field edits are lost if the
+browser is refreshed or closed.
 
 ## Updating data after deployment
 

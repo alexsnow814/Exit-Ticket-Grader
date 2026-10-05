@@ -442,15 +442,40 @@ def save_rows(
     worksheet = sheets.worksheet("exit_ticket_scores")
     current = worksheet.get_all_values()
     header = current[0] if current else SCORE_COLUMNS
-    data = current[1:] if current else []
+    data = [row + [""] * (len(header) - len(row)) for row in current[1:]] if current else []
     header_map = {name: index for index, name in enumerate(header)}
     if not set(SCORE_COLUMNS).issubset(header_map):
         raise ValueError("exit_ticket_scores has unexpected column headings")
 
+    before = [row.copy() for row in data]
     data = merge_score_rows(header, data, rows, update_existing_only)
 
-    worksheet.update([header, *data], value_input_option="USER_ENTERED")
-    load_sheet.clear()
+    def same_cells(left, right):
+        for old, new in zip(left, right):
+            if str(old) == str(new):
+                continue
+            try:
+                if float(old) == float(new):
+                    continue
+            except (TypeError, ValueError):
+                pass
+            return False
+        return True
+
+    changes = [
+        {
+            "range": f"A{index + 2}:{gspread.utils.rowcol_to_a1(index + 2, len(header))}",
+            "values": [row],
+        }
+        for index, row in enumerate(data[:len(before)])
+        if not same_cells(before[index], row)
+    ]
+    if changes:
+        worksheet.batch_update(changes, value_input_option="USER_ENTERED")
+    if len(data) > len(before):
+        worksheet.append_rows(data[len(before):], value_input_option="USER_ENTERED")
+    if changes or len(data) > len(before):
+        load_sheet.clear()
 
 
 def pdf_page_count(pdf_bytes: bytes) -> int:
@@ -460,6 +485,12 @@ def pdf_page_count(pdf_bytes: bytes) -> int:
     count = document.page_count
     document.close()
     return count
+
+
+@st.cache_data(max_entries=32, show_spinner=False)
+def cached_render_page(pdf_bytes: bytes, page_index: int) -> bytes:
+    """Avoid rerendering a page when the teacher revisits it or submits Save."""
+    return render_page(pdf_bytes, page_index)
 
 
 def show_zoomable_page(png_bytes: bytes):
@@ -610,7 +641,7 @@ def activate_batch(scan, roster_scope, all_students, expected_students,
 
 st.title("📝 Exit Ticket Grader")
 st.caption(
-    "Review a scanned class batch, assign each page to a student, and save or resume progress."
+    "Review scanned work. Save, Previous, and Next commit the current student's grades."
 )
 
 try:
@@ -874,77 +905,71 @@ st.progress(
     (page_position + 1) / page_count,
     text=f"{view_mode}: page {page_position + 1} of {page_count}",
 )
-document_options = ["Student work"]
-if answer_key:
-    document_options.append("Answer key")
-document_view_key = f"document_view_{scan['id']}"
-display = st.session_state.get(document_view_key, "Student work")
-if display not in document_options:
-    display = "Student work"
-
-previous, next_page = st.columns(2)
-go_previous = previous.button(
-    "← Previous", disabled=page_position == 0, use_container_width=True
-)
-go_next = next_page.button(
-    "Next →", disabled=page_position == page_count - 1, use_container_width=True
-)
-
 confidence = st.session_state.page_confidence.get(page_index, 0)
 options = ["— Unmatched / skip —", *expected_students]
 current_student = st.session_state.page_students.get(page_index)
-selected = st.selectbox(
-    "Student on this page",
-    options,
-    index=options.index(current_student) if current_student in options else 0,
-    key=f"student_page_{page_index}_{scan['id']}",
-)
-selected_student = None if selected.startswith("—") else selected
-st.session_state.page_students[page_index] = selected_student
-st.session_state.setdefault("page_assignment_overrides", {})[
-    (scan["id"], page_index)
-] = selected_student
-if current_student is None:
-    st.caption(
-        "No student name was detected. If this is an Extra copy, choose the "
-        "student who completed it."
+selected_student = current_student
+with st.form(
+    key=f"grade_form_{scan['id']}_{page_index}",
+    clear_on_submit=False,
+    enter_to_submit=False,
+    border=False,
+):
+    previous, next_page = st.columns(2)
+    go_previous = previous.form_submit_button(
+        "← Previous", disabled=page_position == 0, use_container_width=True
     )
-else:
-    st.caption(f"Automatic name-match confidence: {confidence}%")
-
-with st.container(key="grading_workspace"):
-    work_column, grade_column = st.columns(
-        [2, 1], gap="small", vertical_alignment="top"
+    go_next = next_page.form_submit_button(
+        "Next →", disabled=page_position == page_count - 1, use_container_width=True
     )
 
-    with work_column:
-        if display == "Answer key" and answer_key:
-            key_bytes = download_file(answer_key["id"])
-            page_png = render_page(
-                key_bytes, min(page_index, pdf_page_count(key_bytes) - 1)
-            )
-        else:
-            page_png = render_page(scan_bytes, page_index)
-        show_zoomable_page(page_png)
-        with st.container(key="save_status_row"):
-            save_area, status_area = st.columns([1, 1])
-            save_progress = save_area.button(
-                "Save",
-                type="primary",
-                use_container_width=True,
-                disabled=bool(duplicates),
-            )
-            student_status = status_area.empty()
-        st.radio(
-            "Document",
-            document_options,
-            horizontal=True,
-            key=document_view_key,
+    selected = st.selectbox(
+        "Student on this page",
+        options,
+        index=options.index(current_student) if current_student in options else 0,
+        key=f"student_page_{page_index}_{scan['id']}",
+    )
+    selected_student = None if selected.startswith("—") else selected
+    if current_student is None:
+        st.caption(
+            "No student name was detected. If this is an Extra copy, choose the "
+            "student who completed it, then press Save before grading."
+        )
+    else:
+        st.caption(f"Automatic name-match confidence: {confidence}%")
+
+    with st.container(key="grading_workspace"):
+        work_column, grade_column = st.columns(
+            [2, 1], gap="small", vertical_alignment="top"
         )
 
-    with grade_column:
-        if selected_student:
-            student_grades = dict(st.session_state.grades.get(selected_student, {}))
+        with work_column:
+            if answer_key:
+                work_tab, key_tab = st.tabs(["Student work", "Answer key"])
+                with work_tab:
+                    show_zoomable_page(cached_render_page(scan_bytes, page_index))
+                with key_tab:
+                    key_bytes = download_file(answer_key["id"])
+                    show_zoomable_page(cached_render_page(
+                        key_bytes, min(page_index, pdf_page_count(key_bytes) - 1)
+                    ))
+            else:
+                show_zoomable_page(cached_render_page(scan_bytes, page_index))
+            with st.container(key="save_status_row"):
+                save_area, status_area = st.columns([1, 1])
+                save_progress = save_area.form_submit_button(
+                    "Save",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=bool(duplicates),
+                )
+                student_status = status_area.empty()
+
+        with grade_column:
+            # The inputs shown on this render belong to the page's *current*
+            # student. A changed assignment is applied on submit and then
+            # rerendered before any grades can be entered for the new student.
+            student_grades = dict(st.session_state.grades.get(current_student, {}))
             if st.session_state.manual_grading:
                 possible = st.number_input(
                     "Total possible points",
@@ -962,49 +987,51 @@ with st.container(key="grading_workspace"):
                     if saved_grade is not None
                     else None
                 )
-                entered_grade = st.number_input(
-                    f"Manual grade (/{possible:g})",
-                    min_value=0.0,
-                    max_value=possible,
-                    value=current_grade,
-                    step=0.5,
-                    format="%.2f",
-                    placeholder="Ungraded",
-                    key=f"manual_grade_{scan['id']}_{selected_student}",
-                )
-                if entered_grade is None:
-                    student_grades.pop(MANUAL_QUESTION, None)
-                else:
-                    student_grades[MANUAL_QUESTION] = entered_grade
-            else:
-                for question in st.session_state.questions:
-                    question_id = str(question["question"])
-                    possible = float(question["possible_points"])
+                if current_student:
                     entered_grade = st.number_input(
-                        f"{question_id} (/{possible:g})",
+                        f"Manual grade (/{possible:g})",
                         min_value=0.0,
                         max_value=possible,
-                        value=(
-                            float(student_grades[question_id])
-                            if question_id in student_grades
-                            else None
-                        ),
+                        value=current_grade,
                         step=0.5,
                         format="%.2f",
                         placeholder="Ungraded",
-                        key=f"grade_{scan['id']}_{selected_student}_{question_id}",
+                        key=f"manual_grade_{scan['id']}_{current_student}",
                     )
                     if entered_grade is None:
-                        student_grades.pop(question_id, None)
+                        student_grades.pop(MANUAL_QUESTION, None)
                     else:
-                        student_grades[question_id] = entered_grade
-            # Reassign the top-level object so Streamlit persists the edited values
-            # even after this student's widgets leave the page during navigation.
-            all_grades = dict(st.session_state.grades)
-            all_grades[selected_student] = student_grades
-            st.session_state.grades = all_grades
-        else:
-            st.info("Select a student before entering grades for this page.")
+                        student_grades[MANUAL_QUESTION] = entered_grade
+                else:
+                    st.info("Select a student and press Save to assign this page before grading.")
+            else:
+                if current_student:
+                    for question in st.session_state.questions:
+                        question_id = str(question["question"])
+                        possible = float(question["possible_points"])
+                        entered_grade = st.number_input(
+                            f"{question_id} (/{possible:g})",
+                            min_value=0.0,
+                            max_value=possible,
+                            value=(
+                                float(student_grades[question_id])
+                                if question_id in student_grades
+                                else None
+                            ),
+                            step=0.5,
+                            format="%.2f",
+                            placeholder="Ungraded",
+                            key=f"grade_{scan['id']}_{current_student}_{question_id}",
+                        )
+                        if entered_grade is None:
+                            student_grades.pop(question_id, None)
+                        else:
+                            student_grades[question_id] = entered_grade
+                else:
+                    st.info("Select a student and press Save to assign this page before grading.")
+
+st.caption("Grade edits are not saved until you press Save, Previous, or Next. "
+           "Changing the view or refreshing the browser discards unsubmitted edits.")
 
 required_ids = (
     [MANUAL_QUESTION]
@@ -1024,68 +1051,104 @@ graded_students, ungraded_students, missing_students = completion_status(
 
 enable_mobile_grade_inputs()
 
-if save_progress:
-    try:
-        # A previously graded student can lack a page in a later upload. Do
-        # not replace their saved numeric work with AE merely for that reason.
-        absent_without_work = set(missing_students)
-        if st.session_state.manual_grading:
-            score_rows = build_manual_score_rows(
-                expected_students,
-                scan_name,
-                st.session_state.manual_possible_points,
-                st.session_state.grades,
-                exit_ticket_date,
-                absent_without_work,
-            )
-        else:
-            batch_questions = pd.DataFrame(st.session_state.questions)
-            score_ticket_dates = {}
-            for question in st.session_state.questions:
-                score_ticket = question_score_ticket(question)
-                score_date = date_for_assignment(
-                    exit_ticket_dates_df, f"{score_ticket}.pdf"
-                )
-                if score_date:
-                    score_ticket_dates[assignment_key(score_ticket)] = score_date
-            score_rows = build_score_rows(
-                expected_students,
-                batch_questions,
-                st.session_state.grades,
-                exit_ticket_date,
-                absent_without_work,
-            )
-            # Apply mapped ticket dates here instead of requiring the imported
-            # grader module to accept a newly added keyword argument. Streamlit
-            # can hot-reload this file while retaining an older imported
-            # grader.py module, which previously made every save fail with an
-            # unexpected ``ticket_dates`` argument.
-            for score_row in score_rows:
-                score_row[3] = score_ticket_dates.get(
-                    assignment_key(score_row[2]), score_row[3]
-                )
-        existing_only = (
-            set()
-            if st.session_state.manual_grading
-            else mapped_score_keys(expected_students, batch_questions)
-        )
-        save_rows(score_rows, existing_only)
-    except Exception as exc:
-        st.error("Scores could not be saved. Your page assignments and grades remain on screen.")
-        st.caption(f"Connection detail: {exc}")
+submitted = save_progress or go_previous or go_next
+save_succeeded = False
+if submitted and selected_student != current_student:
+    # The grade inputs were rendered for the *old* page assignment. Never
+    # attach those values to the newly selected student on the same submit.
+    if current_student and student_grades != st.session_state.grades.get(current_student, {}):
+        st.error("Save or discard the current grades before reassigning this page.")
     else:
+        st.session_state.page_students[page_index] = selected_student
+        st.session_state.setdefault("page_assignment_overrides", {})[
+            (scan["id"], page_index)
+        ] = selected_student
         try:
             save_page_assignments(scan, st.session_state.page_students)
         except Exception as exc:
-            st.warning(f"Grades saved, but corrected page names could not be remembered: {exc}")
-        st.session_state.saved_grades = {
-            student: dict(student_grades)
-            for student, student_grades in st.session_state.grades.items()
-        }
-        st.success(
-            f"Progress saved: {len(graded_students)} graded, "
-            f"{len(ungraded_students)} still to grade."
-        )
+            st.error("The new page assignment could not be saved. Please try again.")
+            st.caption(f"Connection detail: {exc}")
+            st.session_state.page_students[page_index] = current_student
+            st.session_state.page_assignment_overrides[(scan["id"], page_index)] = current_student
+        else:
+            save_succeeded = True
+            if go_previous:
+                if navigation_key is None:
+                    st.session_state.page_position = page_position - 1
+                else:
+                    st.session_state[navigation_key] = page_position - 1
+            elif go_next:
+                if navigation_key is None:
+                    st.session_state.page_position = page_position + 1
+                else:
+                    st.session_state[navigation_key] = page_position + 1
+            st.rerun()
+elif submitted:
+    if duplicates and student_grades != st.session_state.grades.get(current_student, {}):
+        st.error("This student is assigned to multiple pages. Correct the assignments before saving grades.")
+    elif current_student is None:
+        # Unmatched Extra pages have no score row to save. Navigation still
+        # works so the teacher can identify them later.
+        save_succeeded = True
+    else:
+        all_grades = dict(st.session_state.grades)
+        all_grades[current_student] = student_grades
+        st.session_state.grades = all_grades
+        try:
+            # Save only this student's edited grades. Missing-upload AE rows
+            # still reconcile in the same write, but other uploaded students'
+            # unfinished inputs are never committed by this button.
+            absent_without_work = set(missing_students)
+            students_to_write = list(dict.fromkeys([current_student, *missing_students]))
+            if st.session_state.manual_grading:
+                score_rows = build_manual_score_rows(
+                    students_to_write,
+                    scan_name,
+                    st.session_state.manual_possible_points,
+                    st.session_state.grades,
+                    exit_ticket_date,
+                    absent_without_work,
+                )
+                existing_only = set()
+            else:
+                batch_questions = pd.DataFrame(st.session_state.questions)
+                score_ticket_dates = {}
+                for question in st.session_state.questions:
+                    score_ticket = question_score_ticket(question)
+                    score_date = date_for_assignment(
+                        exit_ticket_dates_df, f"{score_ticket}.pdf"
+                    )
+                    if score_date:
+                        score_ticket_dates[assignment_key(score_ticket)] = score_date
+                score_rows = build_score_rows(
+                    students_to_write,
+                    batch_questions,
+                    st.session_state.grades,
+                    exit_ticket_date,
+                    absent_without_work,
+                )
+                # Retain the canonical date for scores mapped to an earlier
+                # ticket, including when Streamlit has hot-reloaded grader.py.
+                for score_row in score_rows:
+                    score_row[3] = score_ticket_dates.get(
+                        assignment_key(score_row[2]), score_row[3]
+                    )
+                existing_only = mapped_score_keys(students_to_write, batch_questions)
+            save_rows(score_rows, existing_only)
+        except Exception as exc:
+            st.error("Scores could not be saved. Your grades remain on screen; navigation was stopped.")
+            st.caption(f"Connection detail: {exc}")
+        else:
+            saved_grades = dict(st.session_state.saved_grades)
+            saved_grades[current_student] = dict(student_grades)
+            st.session_state.saved_grades = saved_grades
+            save_succeeded = True
+            graded_students, ungraded_students, missing_students = completion_status(
+                st.session_state.grades, expected_students, required_ids,
+                assigned_students,
+            )
+            if save_progress:
+                st.success("This student's grades were saved.")
 
 selected_required_questions = required_for_student(selected_student)
 saved_grade_count = grade_count(
@@ -1105,19 +1168,26 @@ elif selected_student:
 else:
     student_status.markdown("**No saved grades**")
 
-# Navigation is applied only after the current page's widgets have copied their
-# values into the persistent grade dictionary above.
-if go_previous:
+# A navigation submit changes pages only after its score write succeeds.
+if go_previous and save_succeeded:
     if navigation_key is None:
         st.session_state.page_position = page_position - 1
     else:
         st.session_state[navigation_key] = page_position - 1
     st.rerun()
-if go_next:
+if go_next and save_succeeded:
     if navigation_key is None:
         st.session_state.page_position = page_position + 1
     else:
-        st.session_state[navigation_key] = page_position + 1
+        # A fully graded page drops out of the unit's still-to-grade queue.
+        # Its successor then moves into the current position.
+        page_completed = (
+            navigation_key.startswith("unit_position_")
+            and current_student is not None
+            and grade_count(st.session_state.grades, current_student, required_ids)
+            == len(required_ids)
+        )
+        st.session_state[navigation_key] = page_position if page_completed else page_position + 1
     st.rerun()
 
 st.divider()
