@@ -112,26 +112,26 @@ st.markdown(
             padding-left: 0.65rem;
             padding-right: 0.65rem;
         }
-        .st-key-grading_workspace,
-        .st-key-grading_workspace div[data-testid="stVerticalBlock"],
-        .st-key-grading_workspace div[data-testid="stColumn"] {
+        [class*="st-key-grading_workspace"],
+        [class*="st-key-grading_workspace"] div[data-testid="stVerticalBlock"],
+        [class*="st-key-grading_workspace"] div[data-testid="stColumn"] {
             overflow: visible !important;
         }
-        .st-key-grading_workspace div[data-testid="stHorizontalBlock"] {
+        [class*="st-key-grading_workspace"] div[data-testid="stHorizontalBlock"] {
             display: flex !important;
             flex-direction: row !important;
             flex-wrap: nowrap !important;
             align-items: flex-start !important;
             gap: 0.35rem !important;
         }
-        .st-key-grading_workspace div[data-testid="stColumn"]:nth-child(1) {
+        [class*="st-key-grading_workspace"] div[data-testid="stColumn"]:nth-child(1) {
             flex: 2 1 0 !important;
             width: 66.6667% !important;
             min-width: 0 !important;
             position: relative !important;
             z-index: 2 !important;
         }
-        .st-key-grading_workspace div[data-testid="stColumn"]:nth-child(2) {
+        [class*="st-key-grading_workspace"] div[data-testid="stColumn"]:nth-child(2) {
             flex: 1 1 0 !important;
             width: 33.3333% !important;
             min-width: 0 !important;
@@ -141,13 +141,13 @@ st.markdown(
         div[data-testid="stNumberInput"] label p {
             font-size: 0.82rem;
         }
-        .st-key-grading_workspace div[data-testid="stNumberInput"] input {
+        [class*="st-key-grading_workspace"] div[data-testid="stNumberInput"] input {
             min-width: 0 !important;
             padding-left: 0.35rem !important;
             padding-right: 0.35rem !important;
         }
-        .st-key-grading_workspace button[data-testid="stNumberInputStepDown"],
-        .st-key-grading_workspace button[data-testid="stNumberInputStepUp"] {
+        [class*="st-key-grading_workspace"] button[data-testid="stNumberInputStepDown"],
+        [class*="st-key-grading_workspace"] button[data-testid="stNumberInputStepUp"] {
             display: none !important;
         }
         .st-key-save_status_row div[data-testid="stColumn"] {
@@ -487,7 +487,7 @@ def pdf_page_count(pdf_bytes: bytes) -> int:
     return count
 
 
-@st.cache_data(max_entries=32, show_spinner=False)
+@st.cache_data(max_entries=128, show_spinner=False)
 def cached_render_page(pdf_bytes: bytes, page_index: int) -> bytes:
     """Avoid rerendering a page when the teacher revisits it or submits Save."""
     return render_page(pdf_bytes, page_index)
@@ -518,7 +518,7 @@ def enable_mobile_grade_inputs():
 
         function enhanceGradeInputs() {
           const inputs = doc.querySelectorAll(
-            '.st-key-grading_workspace div[data-testid="stNumberInput"] input'
+            '[class*="st-key-grading_workspace"] div[data-testid="stNumberInput"] input'
           );
 
           inputs.forEach((input) => {
@@ -641,7 +641,7 @@ def activate_batch(scan, roster_scope, all_students, expected_students,
 
 st.title("📝 Exit Ticket Grader")
 st.caption(
-    "Review scanned work. Save, Previous, and Next commit the current student's grades."
+    "Review scanned work. In exit-ticket view, scroll through every page and save the batch at once."
 )
 
 try:
@@ -877,6 +877,250 @@ if not visible_page_indices:
         f"No pages were found for {roster_scope}. Choose All students to review "
         "pages matched to a different period."
     )
+    st.stop()
+if view_mode == "By exit ticket":
+    page_count = len(visible_page_indices)
+    expected_students = st.session_state.expected_students
+    expected_set = set(expected_students)
+    options = ["— Unmatched / skip —", *expected_students]
+    required_ids = (
+        [MANUAL_QUESTION] if st.session_state.manual_grading else
+        [str(question["question"]) for question in st.session_state.questions]
+    )
+    current_assignments = st.session_state.page_students
+    proposed_assignments = dict(current_assignments)
+    entered_by_page = {}
+    status_slots = {}
+    total_scan_pages = pdf_page_count(scan_bytes)
+    key_bytes = download_file(answer_key["id"]) if answer_key else None
+    key_page_count = pdf_page_count(key_bytes) if key_bytes else 0
+    st.caption(f"{page_count} scanned page(s) in this view. Scroll to any student; both Save buttons commit all entries together.")
+    with st.form(
+        key=f"batch_grade_form_{scan['id']}_{roster_scope}",
+        clear_on_submit=False,
+        enter_to_submit=False,
+        border=False,
+    ):
+        save_top = st.form_submit_button(
+            "Save all grades", type="primary", key=f"save_top_{scan['id']}"
+        )
+        if st.session_state.manual_grading:
+            possible = st.number_input(
+                "Total possible points",
+                min_value=0.5,
+                value=float(st.session_state.manual_possible_points),
+                step=0.5,
+                format="%.2f",
+                key=f"batch_manual_possible_{scan['id']}",
+                help="Used for every student's manual-total score in this batch.",
+            )
+        else:
+            possible = None
+        for position, item_page_index in enumerate(visible_page_indices, start=1):
+            if position > 1:
+                st.divider()
+            current_student = current_assignments.get(item_page_index)
+            confidence = st.session_state.page_confidence.get(item_page_index, 0)
+            st.subheader(f"{position}. {current_student or 'Unmatched / Extra'}")
+            st.caption(f"Scanned page {item_page_index + 1} of {total_scan_pages}")
+            selected = st.selectbox(
+                "Student on this page",
+                options,
+                index=options.index(current_student) if current_student in options else 0,
+                key=f"student_page_{item_page_index}_{scan['id']}",
+            )
+            proposed_assignments[item_page_index] = (
+                None if selected.startswith("—") else selected
+            )
+            if current_student is None:
+                st.caption("If this is an Extra copy, assign a student and save once before grading this page.")
+            else:
+                st.caption(f"Automatic name-match confidence: {confidence}%")
+
+            with st.container(key=f"grading_workspace_{item_page_index}"):
+                work_column, grade_column = st.columns(
+                    [2, 1], gap="small", vertical_alignment="top"
+                )
+                with work_column:
+                    if answer_key:
+                        work_tab, key_tab = st.tabs(["Student work", "Answer key"])
+                        with work_tab:
+                            show_zoomable_page(cached_render_page(scan_bytes, item_page_index))
+                        with key_tab:
+                            show_zoomable_page(cached_render_page(
+                                key_bytes, min(item_page_index, key_page_count - 1)
+                            ))
+                    else:
+                        show_zoomable_page(cached_render_page(scan_bytes, item_page_index))
+                    status_slots[item_page_index] = st.empty()
+
+                with grade_column:
+                    student_grades = dict(st.session_state.grades.get(current_student, {}))
+                    if current_student:
+                        if st.session_state.manual_grading:
+                            saved_grade = student_grades.get(MANUAL_QUESTION)
+                            entered = st.number_input(
+                                f"Manual grade (/{st.session_state.manual_possible_points:g})",
+                                min_value=0.0,
+                                max_value=max(
+                                    float(st.session_state.manual_possible_points),
+                                    float(saved_grade or 0),
+                                ),
+                                value=float(saved_grade) if saved_grade is not None else None,
+                                step=0.5,
+                                format="%.2f",
+                                placeholder="Ungraded",
+                                key=f"manual_grade_{scan['id']}_{item_page_index}_{current_student}",
+                            )
+                            if entered is None:
+                                student_grades.pop(MANUAL_QUESTION, None)
+                            else:
+                                student_grades[MANUAL_QUESTION] = entered
+                        else:
+                            for question in st.session_state.questions:
+                                question_id = str(question["question"])
+                                question_possible = float(question["possible_points"])
+                                entered = st.number_input(
+                                    f"{question_id} (/{question_possible:g})",
+                                    min_value=0.0,
+                                    max_value=question_possible,
+                                    value=(
+                                        float(student_grades[question_id])
+                                        if question_id in student_grades else None
+                                    ),
+                                    step=0.5,
+                                    format="%.2f",
+                                    placeholder="Ungraded",
+                                    key=f"grade_{scan['id']}_{item_page_index}_{current_student}_{question_id}",
+                                )
+                                if entered is None:
+                                    student_grades.pop(question_id, None)
+                                else:
+                                    student_grades[question_id] = entered
+                    else:
+                        st.info("Assign a student and save once to grade this page.")
+                    entered_by_page[item_page_index] = student_grades
+        save_bottom = st.form_submit_button(
+            "Save all grades", type="primary", key=f"save_bottom_{scan['id']}"
+        )
+
+    enable_mobile_grade_inputs()
+    if save_top or save_bottom:
+        assigned_expected = [
+            student for student in proposed_assignments.values()
+            if student in expected_set
+        ]
+        duplicates = sorted({
+            student for student in assigned_expected
+            if assigned_expected.count(student) > 1
+        })
+        changed_pages = [
+            index for index in visible_page_indices
+            if proposed_assignments[index] != current_assignments.get(index)
+        ]
+        if duplicates:
+            st.error("A student is assigned to multiple pages: " + ", ".join(duplicates))
+        elif any(
+            current_assignments.get(index)
+            and entered_by_page[index] != st.session_state.grades.get(current_assignments[index], {})
+            for index in changed_pages
+        ):
+            st.error("A reassigned page also has unsaved grades. Save those grades or clear them before changing its student.")
+        elif st.session_state.manual_grading and any(
+            grades.get(MANUAL_QUESTION, 0) > possible
+            for grades in entered_by_page.values()
+        ):
+            st.error("A manual grade exceeds the new total possible points. Adjust it before saving.")
+        else:
+            staged_grades = {
+                student: dict(grades)
+                for student, grades in st.session_state.grades.items()
+            }
+            for index in visible_page_indices:
+                # A newly assigned page's inputs were rendered for its old
+                # student. Its scores become editable on the next render.
+                if index not in changed_pages and current_assignments.get(index):
+                    staged_grades[current_assignments[index]] = entered_by_page[index]
+            missing_uploads = expected_set - set(proposed_assignments.values())
+            if st.session_state.manual_grading:
+                score_rows = build_manual_score_rows(
+                    expected_students, scan_name, possible, staged_grades,
+                    exit_ticket_date, missing_uploads,
+                )
+                existing_only = set()
+            else:
+                batch_questions = pd.DataFrame(st.session_state.questions)
+                score_ticket_dates = {}
+                for question in st.session_state.questions:
+                    score_ticket = question_score_ticket(question)
+                    score_date = date_for_assignment(
+                        exit_ticket_dates_df, f"{score_ticket}.pdf"
+                    )
+                    if score_date:
+                        score_ticket_dates[assignment_key(score_ticket)] = score_date
+                score_rows = build_score_rows(
+                    expected_students, batch_questions, staged_grades,
+                    exit_ticket_date, missing_uploads,
+                )
+                for score_row in score_rows:
+                    score_row[3] = score_ticket_dates.get(
+                        assignment_key(score_row[2]), score_row[3]
+                    )
+                existing_only = mapped_score_keys(expected_students, batch_questions)
+            try:
+                if changed_pages:
+                    save_page_assignments(scan, proposed_assignments)
+                save_rows(score_rows, existing_only)
+            except Exception as exc:
+                st.error("The batch could not be fully saved. Your entries remain on screen; please try Save again.")
+                st.caption(f"Connection detail: {exc}")
+            else:
+                st.session_state.page_students = proposed_assignments
+                for index in changed_pages:
+                    st.session_state.setdefault("page_assignment_overrides", {})[
+                        (scan["id"], index)
+                    ] = proposed_assignments[index]
+                st.session_state.grades = staged_grades
+                st.session_state.saved_grades = {
+                    student: dict(grades) for student, grades in staged_grades.items()
+                }
+                if possible is not None:
+                    st.session_state.manual_possible_points = possible
+                st.success("All grades in this exit ticket were saved.")
+                if changed_pages:
+                    st.rerun()
+
+    assigned_students = {
+        student for student in st.session_state.page_students.values() if student
+    }
+    graded_students, ungraded_students, missing_students = completion_status(
+        st.session_state.grades, expected_students, required_ids, assigned_students
+    )
+    for index, slot in status_slots.items():
+        student = st.session_state.page_students.get(index)
+        saved_count = grade_count(st.session_state.saved_grades, student, required_ids)
+        if student and saved_count == len(required_ids):
+            slot.markdown("✅ **Grades saved**")
+        elif student and saved_count:
+            slot.markdown(f"⚠️ **Partially saved**  \n{saved_count}/{len(required_ids)} grades saved")
+        elif student:
+            slot.markdown("**Grades not saved**")
+        else:
+            slot.markdown("**No saved grades**")
+    st.caption("Edits are saved only when you press Save all grades. Changing views or refreshing before saving discards them.")
+    st.divider()
+    st.subheader("Batch summary")
+    summary_a, summary_b, summary_c, summary_d = st.columns(4)
+    summary_a.metric("Pages in view", page_count)
+    summary_b.metric("Graded students", len(graded_students))
+    summary_c.metric("Still to grade", len(ungraded_students))
+    summary_d.metric("Missing students", len(missing_students))
+    if ungraded_students:
+        with st.expander(f"Still to grade: {len(ungraded_students)} students"):
+            st.write(", ".join(ungraded_students))
+    if missing_students:
+        with st.expander("Students who will receive AE"):
+            st.write("\n".join(f"• {student}" for student in missing_students))
     st.stop()
 if navigation_pages is None:
     page_count = len(visible_page_indices)
