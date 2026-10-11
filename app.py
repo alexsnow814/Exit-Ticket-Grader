@@ -780,11 +780,7 @@ else:
     summary_missing = []
     for index, ticket_name in summary_tickets:
         ticket_questions = questions_for_assignment(questions_df, ticket_name)
-        has_answer_key = any(
-            assignment_key(key["name"]) == assignment_key(ticket_name)
-            for key in answer_keys
-        )
-        manual_ticket = ticket_questions.empty or (index is not None and not has_answer_key)
+        manual_ticket = ticket_questions.empty
         required = required_questions(
             pd.DataFrame() if manual_ticket else ticket_questions,
         )
@@ -856,12 +852,12 @@ if questions.empty:
 if answer_key is None:
     st.warning(
         "No matching answer key was found. Student work is still available, "
-        "and this scan will use manual-total grading."
+        "and mapped questions can still be graded item by item."
     )
 
 activate_batch(
     scan, roster_scope, all_students, expected_students, questions,
-    questions.empty or answer_key is None, scores_df,
+    questions.empty, scores_df,
 )
 try:
     scan_bytes = download_batch(scan["files"])
