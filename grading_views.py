@@ -6,6 +6,13 @@ import pandas as pd
 
 from grader import MANUAL_QUESTION, grade_count, lesson_number, question_is_mapped
 
+EXCLUDED_LESSONS = frozenset({"2.10"})
+
+
+def is_gradable_ticket(name: str) -> bool:
+    """Keep non-test practice scans archived without listing them for grading."""
+    return lesson_number(name) not in EXCLUDED_LESSONS
+
 
 def unit_number(name: str) -> str | None:
     lesson = lesson_number(name)

@@ -10,7 +10,8 @@ from google.auth.transport.requests import AuthorizedSession
 import gspread
 from drive_batches import PDF_MIME, combine_pdfs, list_batches, list_children
 from grading_views import (
-    completion_lists, indexed_pages, lesson_sort_key, required_questions, unit_number,
+    completion_lists, indexed_pages, is_gradable_ticket, lesson_sort_key,
+    required_questions, unit_number,
 )
 
 from grader import (
@@ -650,8 +651,10 @@ try:
     exit_ticket_dates_df = load_sheet("exit_ticket_dates")
     scores_df = load_sheet("exit_ticket_scores")
     _, drive = google_clients()
-    scans = list_batches(drive, INCOMING_FOLDER_ID)
-    answer_keys = list_pdfs(ANSWER_KEY_FOLDER_ID)
+    scans = [scan for scan in list_batches(drive, INCOMING_FOLDER_ID)
+             if is_gradable_ticket(scan["name"])]
+    answer_keys = [key for key in list_pdfs(ANSWER_KEY_FOLDER_ID)
+                   if is_gradable_ticket(key["name"])]
 except Exception as exc:
     st.error("Google Drive or the grading spreadsheet could not be reached.")
     st.caption(f"Connection detail: {exc}")
@@ -740,7 +743,8 @@ elif view_mode == "By student":
         st.stop()
 else:
     configured_names = (
-        questions_df["exit_ticket"].dropna().astype(str).unique().tolist()
+        [name for name in questions_df["exit_ticket"].dropna().astype(str).unique()
+         if is_gradable_ticket(name)]
         if "exit_ticket" in questions_df.columns else []
     )
     units = sorted(
