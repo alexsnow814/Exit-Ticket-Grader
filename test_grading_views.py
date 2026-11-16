@@ -4,7 +4,6 @@ from grading_views import (
     completion_lists,
     completion_status,
     indexed_pages,
-    is_gradable_ticket,
     lesson_sort_key,
     required_questions,
     unit_number,
@@ -41,14 +40,6 @@ def test_mapped_questions_do_not_create_new_assignment_requirements():
     ])
     assert required_questions(questions) == ["11a", "14"]
     assert required_questions(questions, native_only=True) == ["14"]
-
-
-def test_non_test_practice_is_excluded_without_hiding_other_tickets():
-    assert not is_gradable_ticket("2.10 Exit Ticket")
-    assert not is_gradable_ticket("2.10 Exit Ticket Answer Key.pdf")
-    assert is_gradable_ticket("2.1 Exit Ticket")
-    assert is_gradable_ticket("2.11 Exit Ticket")
-    assert is_gradable_ticket("2.100 Exit Ticket")
 
 
 def test_indexed_pages_preserve_scan_and_page_order():

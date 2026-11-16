@@ -10,8 +10,7 @@ from google.auth.transport.requests import AuthorizedSession
 import gspread
 from drive_batches import PDF_MIME, combine_pdfs, list_batches, list_children
 from grading_views import (
-    completion_lists, indexed_pages, is_gradable_ticket, lesson_sort_key,
-    required_questions, unit_number,
+    completion_lists, indexed_pages, lesson_sort_key, required_questions, unit_number,
 )
 
 from grader import (
@@ -25,6 +24,7 @@ from grader import (
     grade_count,
     grades_for_assignment,
     identify_pages,
+    lesson_number,
     mapped_score_keys,
     merge_score_rows,
     question_score_ticket,
@@ -38,6 +38,14 @@ from scan_index import (
 
 
 SPREADSHEET_ID = "1w6iWAYavC3UWK8iuazZFm_KkYla-qAbhOWe7nPfMzSo"
+NON_TEST_PRACTICE_LESSONS = frozenset({"2.10"})
+
+
+def is_gradable_ticket(name: str) -> bool:
+    """Do not show practice-only lessons in the grading interface."""
+    return lesson_number(name) not in NON_TEST_PRACTICE_LESSONS
+
+
 INCOMING_FOLDER_ID = "1Bf3kacbRX7UP5xmR8mahiTU2fTFa9mh6"
 ANSWER_KEY_FOLDER_ID = "1kpaqfrxtGRsk0yBmpy31MGWwyOqaaWx6"
 SCOPES = [
